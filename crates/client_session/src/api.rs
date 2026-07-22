@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, net::SocketAddr};
 
 /// A scalar pose expressed in the Learning Client's engine-independent world vocabulary.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -143,6 +143,51 @@ impl SanitizedIdentity {
     #[must_use]
     pub const fn client_build(&self) -> u16 {
         self.client_build
+    }
+}
+
+/// Sanitized result of authenticated realm discovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredRealm {
+    realm_id: u32,
+    realm_name: SanitizedText,
+    client_build: u16,
+    endpoint: SocketAddr,
+}
+
+impl DiscoveredRealm {
+    pub(crate) fn new(
+        realm_id: u32,
+        realm_name: impl Into<String>,
+        client_build: u16,
+        endpoint: SocketAddr,
+    ) -> Result<Self, IdentityError> {
+        Ok(Self {
+            realm_id,
+            realm_name: SanitizedText::new(realm_name)?,
+            client_build,
+            endpoint,
+        })
+    }
+
+    #[must_use]
+    pub const fn realm_id(&self) -> u32 {
+        self.realm_id
+    }
+
+    #[must_use]
+    pub fn realm_name(&self) -> &str {
+        self.realm_name.as_str()
+    }
+
+    #[must_use]
+    pub const fn client_build(&self) -> u16 {
+        self.client_build
+    }
+
+    #[must_use]
+    pub const fn endpoint(&self) -> SocketAddr {
+        self.endpoint
     }
 }
 
@@ -341,6 +386,9 @@ pub enum ClientEventKind {
     IdentityConfigured {
         identity: SanitizedIdentity,
     },
+    RealmDiscovered {
+        realm: DiscoveredRealm,
+    },
     PoseObserved {
         source: PoseSource,
         pose: WorldPose,
@@ -383,6 +431,13 @@ impl SemanticDiagnostic {
         }
     }
 
+    pub(crate) fn from_failure(sequence: u64, failure: &ClientFailure) -> Self {
+        Self {
+            sequence,
+            message: failure.context.clone(),
+        }
+    }
+
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
@@ -398,6 +453,7 @@ impl SemanticDiagnostic {
 pub struct ClientSnapshot {
     pub identity: SanitizedIdentity,
     pub phase: ClientPhase,
+    pub discovered_realm: Option<DiscoveredRealm>,
     pub entry_anchor: Option<WorldPose>,
     pub predicted_pose: Option<WorldPose>,
     pub submitted_pose: Option<WorldPose>,
@@ -414,6 +470,7 @@ impl ClientSnapshot {
         Self {
             identity,
             phase: ClientPhase::Offline,
+            discovered_realm: None,
             entry_anchor: None,
             predicted_pose: None,
             submitted_pose: None,
@@ -433,9 +490,9 @@ impl ClientSnapshot {
 mod tests {
     use super::{
         ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
-        ControlCommand, EntryStage, FailureCategory, IdentityError, MovementIntent,
-        MovementIntentError, PoseSource, ProofStage, Recovery, RecoveryAction, SanitizedIdentity,
-        SanitizedText, SemanticDiagnostic, WorldPose,
+        ControlCommand, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,
+        MovementIntent, MovementIntentError, PoseSource, ProofStage, Recovery, RecoveryAction,
+        SanitizedIdentity, SanitizedText, SemanticDiagnostic, WorldPose,
     };
     use crate::{
         BoundaryError, ConfigError, CredentialFileKind, CredentialFileProblem, QueueCounters,
@@ -480,7 +537,14 @@ mod tests {
             RecoveryAction::RestartClient,
         );
         let events = semantic_events(&identity, &failure, pose);
-        let snapshot = populated_snapshot(identity.clone(), failure.clone(), pose);
+        let discovered = DiscoveredRealm::new(
+            1,
+            "Miazcore Reference Realm",
+            12_340,
+            "127.0.0.1:8085".parse().unwrap(),
+        )
+        .unwrap();
+        let snapshot = populated_snapshot(identity.clone(), discovered, failure.clone(), pose);
 
         let values = [
             format!(
@@ -529,6 +593,15 @@ mod tests {
             ClientEventKind::IdentityConfigured {
                 identity: identity.clone(),
             },
+            ClientEventKind::RealmDiscovered {
+                realm: DiscoveredRealm::new(
+                    1,
+                    "Miazcore Reference Realm",
+                    12_340,
+                    "127.0.0.1:8085".parse().unwrap(),
+                )
+                .unwrap(),
+            },
             ClientEventKind::PoseObserved {
                 source: PoseSource::EntryObservation,
                 pose,
@@ -551,10 +624,12 @@ mod tests {
 
     fn populated_snapshot(
         identity: SanitizedIdentity,
+        discovered: DiscoveredRealm,
         failure: ClientFailure,
         pose: WorldPose,
     ) -> ClientSnapshot {
         let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.discovered_realm = Some(discovered);
         snapshot.entry_anchor = Some(pose);
         snapshot.predicted_pose = Some(pose);
         snapshot.submitted_pose = Some(pose);

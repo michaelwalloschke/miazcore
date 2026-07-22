@@ -4,7 +4,7 @@
 
 A private learning project for building a small, original game client that speaks to an AzerothCore Wrath of the Lich King 3.3.5a server.
 
-> **Current status:** the reproducible local AzerothCore Reference Realm and the first production Learning Client slice are implemented. The client currently renders an explicitly offline Diagnostic World; authentication, world entry, networked movement, and Movement Proof remain later slices. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
+> **Current status:** the reproducible local AzerothCore Reference Realm and the first two production Learning Client slices are implemented. A headless production path now performs real SRP6 authentication and verified realm discovery, while the visible Bevy application deliberately remains an explicitly offline Diagnostic World. World authentication, character selection, networked movement, and Movement Proof remain later slices. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
 
 ## What this project is
 
@@ -26,13 +26,13 @@ No Blizzard client installation, data files, terrain, models, audio, or interfac
 | Area | State | What exists |
 | --- | --- | --- |
 | Reference Realm | Implemented and proven | A repository-owned, six-service Docker Compose stack with pinned AzerothCore images, deterministic fixture provisioning, health checks, and a real protocol smoke test |
-| Protocol contract | Decision-complete | Build-12340 login/world state machines, SRP6, encrypted world headers, character entry, synchronization, self-state decoding, and movement framing |
-| Client architecture | Implemented foundation | A four-package production workspace enforces engine-free protocol/session layers beneath a thin Bevy adapter |
+| Protocol contract | Login path implemented | Independent build-12340 login fixtures, SRP6, challenge/proof framing, realm-list decoding, and directional header-crypto vectors are production-tested; world framing remains deferred |
+| Client architecture | Login worker implemented | A four-package workspace enforces engine-free protocol/session layers; the dedicated blocking worker uses private transport, clock, and entropy ports beneath the bounded semantic boundary |
 | Diagnostic experience | Implemented offline | The production viewport-first cockpit renders project-owned primitives, three-pose diagnostics, controls, and semantic events without networking |
 | Engine/platform path | Implemented foundation | The production shell renders on Apple Silicon Metal, runs headless adapter tests, and compile-checks the Windows MSVC target |
-| Production Learning Client | Slice 1 complete | Immutable configuration, zeroizing credentials, bounded semantic queues, an offline session source, and the Bevy Diagnostic World are implemented |
+| Production Learning Client | Slice 2 complete | The offline Bevy client remains unchanged, while an engine-free headless harness authenticates and discovers the exact configured Reference Realm through production code |
 
-The production client and Reference Realm remain deliberately disconnected in slice 1. The realm smoke test stops after authenticated character enumeration, while the application remains visibly `Offline`; neither path claims production-client world entry or movement. Authenticated realm discovery is the next implementation frontier.
+The headless Learning Client now contacts the login service and disconnects after authenticated realm discovery. It verifies realm ID `1`, `Miazcore Reference Realm`, negotiated build `12340`, and `127.0.0.1:8085`; it does not open the world socket. The Bevy application remains visibly `Offline`, exposes no connection action, and makes no world-entry or movement claim. Authenticated fixture-character selection is the next implementation frontier.
 
 ## Architecture
 
@@ -54,8 +54,8 @@ flowchart LR
 
 The responsibilities are intentionally strict:
 
-- `client_protocol` is the engine-free boundary that will own wire codecs, SRP6 and header crypto, packet framing, and project-owned AzerothCore movement types. Slice 1 implements only the locked build boundary; protocol behavior remains deferred.
-- `client_session` owns immutable configuration, zeroizing credentials, semantic state, bounded queues, and session lifecycle. Slice 1 runs a dedicated offline worker; sockets and the ordered login/world state machine remain deferred.
+- `client_protocol` is the engine-free byte boundary. It now owns the build-12340 login challenge/proof and realm-list codecs, SRP6 calculation, proof verification, and independently vectored directional header crypto. Live world framing and crypto integration remain deferred.
+- `client_session` owns immutable configuration, zeroizing credentials, semantic state, bounded queues, and session lifecycle. Its headless discovery worker owns blocking login transport and ordered state, with private transport, monotonic-clock, and entropy ports for deterministic tests. The visible application still uses a separate offline worker.
 - `client_bevy` owns only player input, presentation/interpolation, placeholder rendering, camera control, and redacted diagnostics. Engine-independent prediction remains a later `client_session` capability; slice 1 moves only an explicitly offline display placeholder.
 - `learning_client` composes those layers without hiding protocol or retry behavior.
 
@@ -103,6 +103,25 @@ scripts/render-smoke.sh
 ```
 
 Generated render artifacts go under the ignored `artifacts/` directory by default.
+
+## Quick start: Authenticated realm discovery
+
+Start and verify the local Reference Realm first, then run the serial headless gate:
+
+```sh
+infra/azerothcore/realm up
+scripts/live-realm-discovery.sh
+```
+
+The gate acquires a repository-scoped lock, checks realm health, runs the production `client_session` worker with the ignored `0600` fixture credentials, and checks health again. A pass reports only sanitized semantics:
+
+```text
+realm discovery: PASS realm=1 name=Miazcore Reference Realm build=12340 endpoint=127.0.0.1:8085 semantic_events=8 disconnected=true
+```
+
+The worker sends `StartEntry` only through the engine-independent harness. It authenticates the login connection, selects and verifies the realm, closes the login socket, and stops. It does not connect to `127.0.0.1:8085`, select a character, or alter the offline Bevy UI.
+
+The committed fixture corpus under `crates/client_protocol/tests/fixtures/v1/` contains only synthetic credentials, entropy, keys, and manually specified frames. Every payload has a versioned manifest with build, direction, opcode, semantics, length, SHA-256, provenance, and upstream pin. Live credentials, session keys, and authenticated captures are forbidden.
 
 ### Reference Realm prerequisites
 
@@ -278,7 +297,7 @@ The client targets the AzerothCore-compatible Wrath of the Lich King 3.3.5a prot
 The minimum world-entry path includes:
 
 1. SRP6 login authentication;
-2. authenticated realm discovery;
+2. **complete:** authenticated realm discovery through the headless production worker;
 3. world-session authentication with encrypted headers;
 4. exact fixture-character enumeration and login;
 5. world verification, time synchronization, and no-flight synchronization;
@@ -337,7 +356,8 @@ Each slice keeps the engine-independent boundary intact and admits only work req
 ├── rust-toolchain.toml                Rust, component, and target pin
 ├── crates/
 │   ├── client_protocol/               Engine-independent protocol boundary
-│   ├── client_session/                Configuration and semantic session boundary
+│   │   └── tests/fixtures/v1/          Synthetic manifested login/crypto corpus
+│   ├── client_session/                Configuration, real login worker, and semantic boundary
 │   ├── client_bevy/                   Thin Bevy adapter and Diagnostic World
 │   └── learning_client/               Composition binary
 ├── scripts/                            Routine, dependency, render, and platform gates

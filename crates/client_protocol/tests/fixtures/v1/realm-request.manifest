@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-auth
+opcode=REALM_LIST/0x10
+semantics=authenticated realm-list request
+byte_length=5
+sha256=0f7e5b031a1706e40329c19e1059dca60f8cef74aaa8e73a911a414bc59e4907
+provenance=manually specified fixed build-12340 frame
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=realm-request.hex

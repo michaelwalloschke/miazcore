@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=synthetic-header
+semantics=first six decrypted-direction header stream bytes after the mandatory RC4-drop1024
+byte_length=6
+sha256=6c420778313cd4b3d3529f592d44db6728829e67863bee1dadc6d9c0eaa95d00
+provenance=independent Python standard-library HMAC-SHA1 and RC4 reference
+upstream_pin=wow_srp/25ffab6433e1ee5eee629200cf42b592c1f36121
+payload=header-server-ciphertext.hex

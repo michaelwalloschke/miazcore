@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=auth-to-client
+opcode=REALM_LIST/0x10
+semantics=one unlocked versioned Reference Realm at loopback port 8085
+byte_length=66
+sha256=7fdacf9b98a99f8cf38c6d80de5a969e20f4c100f8a428a7d112abc710688ca0
+provenance=manually specified build-12340 realm-list response
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=realm-response.hex

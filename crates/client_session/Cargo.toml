@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 client_protocol.workspace = true
+getrandom.workspace = true
 zeroize.workspace = true
 
 [lints]

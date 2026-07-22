@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-auth
+opcode=AUTH_LOGON_PROOF/0x01
+semantics=synthetic SRP client public key proof zero CRC and no token
+byte_length=75
+sha256=754e6b045fe5ca9dd9fa0df4f6b7908bcf9f531963090c977a5fb863d9daebd7
+provenance=independent Python standard-library SRP6 calculation
+upstream_pin=wow_srp/25ffab6433e1ee5eee629200cf42b592c1f36121
+payload=login-proof-request.hex

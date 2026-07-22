@@ -1,20 +1,26 @@
 //! Engine-independent application/session boundary for the Learning Client.
 
 mod api;
+mod boundary;
 mod config;
+mod machine;
 mod offline;
+mod realm;
+mod runtime;
 
 pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
-    ControlCommand, EntryStage, FailureCategory, IdentityError, MovementIntent,
+    ControlCommand, DiscoveredRealm, EntryStage, FailureCategory, IdentityError, MovementIntent,
     MovementIntentError, PoseSource, ProofStage, QueueCounters, Recovery, RecoveryAction,
     SanitizedIdentity, SanitizedText, SemanticDiagnostic, WorldPose,
 };
+pub use boundary::BoundaryError;
 pub use config::{
     ClientConfig, ClientConfigSpec, ConfigError, CredentialFileKind, CredentialFileProblem,
     CredentialPaths, LoadedClientConfig,
 };
-pub use offline::{BoundaryError, OfflineSession};
+pub use offline::OfflineSession;
+pub use realm::{RealmDiscoveryEvidence, RealmDiscoverySession};
 
 /// Lossless semantic control operations wait in a bounded FIFO of this size.
 pub const CONTROL_CAPACITY: usize = 16;

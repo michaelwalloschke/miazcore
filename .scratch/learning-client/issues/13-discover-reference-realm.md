@@ -1,7 +1,7 @@
 # Discover the Reference Realm through Authenticated Login
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Render the Offline Diagnostic World from the Production Scaffold](12-render-offline-diagnostic-world.md)
 
 ## Parent
@@ -16,9 +16,9 @@ Implement the fixture-manifest format and synthetic SRP/header-crypto vectors, l
 
 ## Entry gate
 
-- [ ] Ticket 12 passes its full production scaffold and routine verification gate on the current branch.
-- [ ] Reference Realm `health` is green.
-- [ ] The entry evidence and exact predecessor commit are recorded.
+- [x] Ticket 12 passes its full production scaffold and routine verification gate on the current branch.
+- [x] Reference Realm `health` is green.
+- [x] The entry evidence and exact predecessor commit are recorded.
 
 ## Acceptance criteria
 

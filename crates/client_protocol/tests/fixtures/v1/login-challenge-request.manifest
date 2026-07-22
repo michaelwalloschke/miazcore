@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-auth
+opcode=AUTH_LOGON_CHALLENGE/0x00
+semantics=3.3.5 build-12340 login challenge for synthetic account LEARNER
+byte_length=41
+sha256=3a9b124ab14c7de3b0813902a01427f826c8d13d0f12bb2fd9b2980d005a9f3a
+provenance=manually framed from the accepted build-12340 login layout
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=login-challenge-request.hex

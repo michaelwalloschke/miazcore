@@ -280,9 +280,32 @@ impl ClientConfig {
     }
 }
 
-struct CredentialMaterial {
+pub(crate) struct CredentialMaterial {
     account: Zeroizing<Vec<u8>>,
     password: Zeroizing<Vec<u8>>,
+}
+
+impl CredentialMaterial {
+    pub(crate) fn normalize_for_login(&mut self) {
+        self.account.make_ascii_uppercase();
+        self.password.make_ascii_uppercase();
+    }
+
+    pub(crate) fn account(&self) -> &[u8] {
+        &self.account
+    }
+
+    pub(crate) fn password(&self) -> &[u8] {
+        &self.password
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic(account: &[u8], password: &[u8]) -> Self {
+        Self {
+            account: Zeroizing::new(account.to_vec()),
+            password: Zeroizing::new(password.to_vec()),
+        }
+    }
 }
 
 impl fmt::Debug for CredentialMaterial {
@@ -302,7 +325,7 @@ impl LoadedClientConfig {
         &self.config
     }
 
-    pub(crate) fn into_parts(self) -> (ClientConfig, impl Send + 'static) {
+    pub(crate) fn into_parts(self) -> (ClientConfig, CredentialMaterial) {
         debug_assert!(!self.credentials.account.is_empty());
         debug_assert!(!self.credentials.password.is_empty());
         (self.config, self.credentials)

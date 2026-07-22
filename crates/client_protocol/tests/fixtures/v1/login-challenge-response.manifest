@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=auth-to-client
+opcode=AUTH_LOGON_CHALLENGE/0x00
+semantics=accepted synthetic SRP challenge with fixed public key salt prime and generator
+byte_length=119
+sha256=661ba139da8b1f71a733d26c856a14c27358388fbb511e6edb1ac32cb602b9bd
+provenance=independent Python standard-library SRP6 calculation
+upstream_pin=wow_srp/25ffab6433e1ee5eee629200cf42b592c1f36121
+payload=login-challenge-response.hex

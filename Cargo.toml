@@ -17,6 +17,12 @@ bevy = { version = "=0.19.0", default-features = false, features = ["3d", "ui"] 
 client_bevy = { path = "crates/client_bevy", version = "=0.1.0" }
 client_protocol = { path = "crates/client_protocol", version = "=0.1.0" }
 client_session = { path = "crates/client_session", version = "=0.1.0" }
+crypto-bigint = { version = "=0.6.1", default-features = false, features = ["zeroize"] }
+getrandom = "=0.3.4"
+hmac = "=0.12.1"
+sha1 = "=0.10.6"
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
 zeroize = { version = "=1.8.2", default-features = false, features = ["alloc"] }
 
 [workspace.lints.rust]
