@@ -1,7 +1,7 @@
 # Render the Offline Diagnostic World from the Production Scaffold
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: None — can start immediately
 
 ## Parent
@@ -18,23 +18,23 @@ The end-to-end offline path includes immutable configuration, credential-file va
 
 ## Entry gate
 
-- [ ] Reference Realm `health` and `smoke` pass on the current branch.
-- [ ] The disposable Bevy proof still passes its native tests, Metal render proof, and Windows MSVC all-target compile check.
-- [ ] The entry evidence is recorded before implementation begins.
+- [x] Reference Realm `health` and `smoke` pass on the current branch.
+- [x] The disposable Bevy proof still passes its native tests, Metal render proof, and Windows MSVC all-target compile check.
+- [x] The entry evidence is recorded before implementation begins.
 
 ## Acceptance criteria
 
-- [ ] The production workspace contains the four accepted crates and an exact dependency lock.
-- [ ] Only `client_bevy` and the composition binary depend on Bevy; dependencies never point back toward the engine.
-- [ ] Configuration is immutable after startup, validates credential files without disclosing their contents, and rejects invalid or unsafe identity/configuration values visibly.
-- [ ] Secret-bearing values are zeroized where ownership ends, and formatting every public command, event, snapshot, error, and diagnostic proves that credentials and session material cannot appear.
-- [ ] The final control FIFO, latest-value movement-intent mailbox, event FIFO, and latest snapshot projection exist behind an engine-independent boundary; the offline source exercises that same boundary.
-- [ ] The production app renders the accepted `Offline` Diagnostic World through Metal using project-owned primitives and UI.
-- [ ] Input, viewport focus, chase/orbit camera, zoom, and the Rendered/Submitted/Realm-observed diagnostic presentation match the accepted experience while remaining offline.
-- [ ] Bevy systems execute in the accepted `Ingress -> Input -> Presentation -> Camera -> Diagnostics` order.
-- [ ] Formatting, locked native workspace and all-target checks, Clippy with warnings denied, and the full native test suite pass.
-- [ ] `MinimalPlugins` adapter tests, dependency-boundary assertions, configuration/credential/redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
-- [ ] The exit evidence, remaining deferrals, and exact passing commit are recorded.
+- [x] The production workspace contains the four accepted crates and an exact dependency lock.
+- [x] Only `client_bevy` and the composition binary depend on Bevy; dependencies never point back toward the engine.
+- [x] Configuration is immutable after startup, validates credential files without disclosing their contents, and rejects invalid or unsafe identity/configuration values visibly.
+- [x] Secret-bearing values are zeroized where ownership ends, and formatting every public command, event, snapshot, error, and diagnostic proves that credentials and session material cannot appear.
+- [x] The final control FIFO, latest-value movement-intent mailbox, event FIFO, and latest snapshot projection exist behind an engine-independent boundary; the offline source exercises that same boundary.
+- [x] The production app renders the accepted `Offline` Diagnostic World through Metal using project-owned primitives and UI.
+- [x] Input, viewport focus, chase/orbit camera, zoom, and the Rendered/Submitted/Realm-observed diagnostic presentation match the accepted experience while remaining offline.
+- [x] Bevy systems execute in the accepted `Ingress -> Input -> Presentation -> Camera -> Diagnostics` order.
+- [x] Formatting, locked native workspace and all-target checks, Clippy with warnings denied, and the full native test suite pass.
+- [x] `MinimalPlugins` adapter tests, dependency-boundary assertions, configuration/credential/redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
+- [x] The exit evidence, remaining deferrals, and exact passing commit are recorded.
 
 ## Explicit deferrals
 
@@ -51,3 +51,11 @@ The end-to-end offline path includes immutable configuration, credential-file va
 - Keep the Windows compile tripwire green without claiming Windows runtime acceptance.
 - Do not widen gameplay, content, protocol, multiplayer, or platform scope.
 - Work and verify this ticket on one candidate, then run `/code-review` and commit before advancing the frontier.
+
+## Answer
+
+Implemented the four-crate production Learning Client scaffold and an explicitly offline, Metal-rendered Diagnostic World. The application validates immutable local configuration and private credential files before startup, owns secret material through zeroizing storage, crosses an engine-independent bounded session boundary, and presents only semantic, redacted state to Bevy. The viewport-first cockpit supports display-only camera-relative movement, focus-aware chase/orbit controls, zoom, ordered systems, and honest unavailable Submitted/Realm-observed poses without opening a socket.
+
+Exact passing candidate: `21d197bcc6e6aaa849bd3b11609b3d14fd6ac952`.
+
+See [the entry-gate record](../research/slice-12-entry-gate.md) and [the exit-gate record](../research/slice-12-exit-gate.md) for the commands, hashes, review result, and retained deferrals.

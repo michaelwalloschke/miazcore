@@ -42,6 +42,10 @@ The route is clear when the engine boundary, protocol/session path, local realm 
 
 None.
 
+## Implementation progress
+
+- [Render the Offline Diagnostic World from the Production Scaffold](issues/12-render-offline-diagnostic-world.md) — The first production slice establishes the exact four-crate Rust/Bevy workspace, immutable and secret-safe offline session boundary, viewport-first Diagnostic World, routine native/Windows gates, and a hashed Metal proof without making a network claim.
+
 ## Out of scope
 
 - Multiplayer behavior, a second simultaneous client, and Windows acceptance; these belong to a later milestone, although this map must avoid blocking that path.
