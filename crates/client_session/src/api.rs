@@ -29,6 +29,7 @@ pub enum IdentityError {
     Empty,
     TooLong,
     ControlCharacter,
+    NonFinite,
 }
 
 impl fmt::Display for IdentityError {
@@ -39,6 +40,7 @@ impl fmt::Display for IdentityError {
             Self::ControlCharacter => {
                 formatter.write_str("value contains a forbidden control character")
             }
+            Self::NonFinite => formatter.write_str("value contains a non-finite coordinate"),
         }
     }
 }
@@ -188,6 +190,100 @@ impl DiscoveredRealm {
     #[must_use]
     pub const fn endpoint(&self) -> SocketAddr {
         self.endpoint
+    }
+}
+
+pub(crate) struct SelectedCharacterFields {
+    pub guid: u64,
+    pub name: String,
+    pub race: u8,
+    pub class: u8,
+    pub gender: u8,
+    pub level: u8,
+    pub area_id: u32,
+    pub map_id: u32,
+    pub position: [f32; 3],
+}
+
+/// Sanitized result of exact configured-character selection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedCharacter {
+    guid: u64,
+    name: SanitizedText,
+    race: u8,
+    class: u8,
+    gender: u8,
+    level: u8,
+    area_id: u32,
+    map_id: u32,
+    position: [f32; 3],
+}
+
+impl SelectedCharacter {
+    pub(crate) fn new(fields: SelectedCharacterFields) -> Result<Self, IdentityError> {
+        if !fields
+            .position
+            .iter()
+            .all(|coordinate| coordinate.is_finite())
+        {
+            return Err(IdentityError::NonFinite);
+        }
+        Ok(Self {
+            guid: fields.guid,
+            name: SanitizedText::new(fields.name)?,
+            race: fields.race,
+            class: fields.class,
+            gender: fields.gender,
+            level: fields.level,
+            area_id: fields.area_id,
+            map_id: fields.map_id,
+            position: fields.position,
+        })
+    }
+
+    #[must_use]
+    pub const fn guid(&self) -> u64 {
+        self.guid
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    #[must_use]
+    pub const fn race(&self) -> u8 {
+        self.race
+    }
+
+    #[must_use]
+    pub const fn class(&self) -> u8 {
+        self.class
+    }
+
+    #[must_use]
+    pub const fn gender(&self) -> u8 {
+        self.gender
+    }
+
+    #[must_use]
+    pub const fn level(&self) -> u8 {
+        self.level
+    }
+
+    #[must_use]
+    pub const fn area_id(&self) -> u32 {
+        self.area_id
+    }
+
+    #[must_use]
+    pub const fn map_id(&self) -> u32 {
+        self.map_id
+    }
+
+    #[must_use]
+    pub const fn position(&self) -> [f32; 3] {
+        self.position
     }
 }
 
@@ -389,6 +485,9 @@ pub enum ClientEventKind {
     RealmDiscovered {
         realm: DiscoveredRealm,
     },
+    CharacterSelected {
+        character: SelectedCharacter,
+    },
     PoseObserved {
         source: PoseSource,
         pose: WorldPose,
@@ -454,6 +553,7 @@ pub struct ClientSnapshot {
     pub identity: SanitizedIdentity,
     pub phase: ClientPhase,
     pub discovered_realm: Option<DiscoveredRealm>,
+    pub selected_character: Option<SelectedCharacter>,
     pub entry_anchor: Option<WorldPose>,
     pub predicted_pose: Option<WorldPose>,
     pub submitted_pose: Option<WorldPose>,
@@ -471,6 +571,7 @@ impl ClientSnapshot {
             identity,
             phase: ClientPhase::Offline,
             discovered_realm: None,
+            selected_character: None,
             entry_anchor: None,
             predicted_pose: None,
             submitted_pose: None,
@@ -492,7 +593,8 @@ mod tests {
         ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
         ControlCommand, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,
         MovementIntent, MovementIntentError, PoseSource, ProofStage, Recovery, RecoveryAction,
-        SanitizedIdentity, SanitizedText, SemanticDiagnostic, WorldPose,
+        SanitizedIdentity, SanitizedText, SelectedCharacter, SelectedCharacterFields,
+        SemanticDiagnostic, WorldPose,
     };
     use crate::{
         BoundaryError, ConfigError, CredentialFileKind, CredentialFileProblem, QueueCounters,
@@ -544,7 +646,25 @@ mod tests {
             "127.0.0.1:8085".parse().unwrap(),
         )
         .unwrap();
-        let snapshot = populated_snapshot(identity.clone(), discovered, failure.clone(), pose);
+        let selected = SelectedCharacter::new(SelectedCharacterFields {
+            guid: 0x1234,
+            name: "Miaztest".to_owned(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            level: 80,
+            area_id: 1,
+            map_id: 0,
+            position: [1.25, -2.5, 3.75],
+        })
+        .unwrap();
+        let snapshot = populated_snapshot(
+            identity.clone(),
+            discovered,
+            selected,
+            failure.clone(),
+            pose,
+        );
 
         let values = [
             format!(
@@ -602,6 +722,20 @@ mod tests {
                 )
                 .unwrap(),
             },
+            ClientEventKind::CharacterSelected {
+                character: SelectedCharacter::new(SelectedCharacterFields {
+                    guid: 0x1234,
+                    name: "Miaztest".to_owned(),
+                    race: 1,
+                    class: 1,
+                    gender: 0,
+                    level: 80,
+                    area_id: 1,
+                    map_id: 0,
+                    position: [1.25, -2.5, 3.75],
+                })
+                .unwrap(),
+            },
             ClientEventKind::PoseObserved {
                 source: PoseSource::EntryObservation,
                 pose,
@@ -625,11 +759,13 @@ mod tests {
     fn populated_snapshot(
         identity: SanitizedIdentity,
         discovered: DiscoveredRealm,
+        selected: SelectedCharacter,
         failure: ClientFailure,
         pose: WorldPose,
     ) -> ClientSnapshot {
         let mut snapshot = ClientSnapshot::offline(identity);
         snapshot.discovered_realm = Some(discovered);
+        snapshot.selected_character = Some(selected);
         snapshot.entry_anchor = Some(pose);
         snapshot.predicted_pose = Some(pose);
         snapshot.submitted_pose = Some(pose);
@@ -666,10 +802,11 @@ mod tests {
 
     fn public_error_formats() -> String {
         format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             IdentityError::Empty,
             IdentityError::TooLong,
             IdentityError::ControlCharacter,
+            IdentityError::NonFinite,
             MovementIntentError::NonFinite,
             BoundaryError::ControlBackpressure,
             BoundaryError::EventBackpressure,

@@ -32,7 +32,7 @@ fn every_v1_manifest_is_complete_and_matches_its_independent_payload() {
         })
         .collect::<Vec<_>>();
     manifests.sort();
-    assert_eq!(manifests.len(), 8);
+    assert_eq!(manifests.len(), 13);
 
     for path in manifests {
         let records = parse_manifest(&path);
@@ -166,7 +166,7 @@ fn fixture_root() -> PathBuf {
 
 fn fixture(name: &str) -> Vec<u8> {
     let encoded = fs::read_to_string(fixture_root().join(name)).unwrap();
-    decode_hex(encoded.trim())
+    decode_hex(&encoded.split_whitespace().collect::<String>())
 }
 
 fn decode_hex(value: &str) -> Vec<u8> {

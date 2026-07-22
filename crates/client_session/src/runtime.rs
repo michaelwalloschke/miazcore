@@ -7,15 +7,19 @@ use std::{
 };
 
 use client_protocol::{
-    LoginChallengeResponse, LoginProofResponse, ProtocolError, REALM_LIST_REQUEST,
-    calculate_srp_client_proof, encode_logon_challenge, encode_logon_proof,
-    read_logon_challenge_response, read_logon_proof_response, read_realm_list_response,
+    CMSG_CHAR_ENUM, LoginChallengeResponse, LoginProofResponse, ProtocolError, REALM_LIST_REQUEST,
+    SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, WorldAuthResponse, WorldClientStream, WorldServerStream,
+    calculate_srp_client_proof, decode_character_enumeration, decode_world_auth_challenge,
+    decode_world_auth_response, encode_logon_challenge, encode_logon_proof,
+    encode_world_auth_session_frame, read_logon_challenge_response, read_logon_proof_response,
+    read_plain_world_server_frame, read_realm_list_response,
 };
 use zeroize::Zeroizing;
 
 use crate::{
     ClientConfig, ClientFailure, ClientPhase, CommandKind, ControlCommand, DiscoveredRealm,
-    EntryStage, FailureCategory, LoadedClientConfig, RecoveryAction,
+    EntryStage, FailureCategory, LoadedClientConfig, RecoveryAction, SelectedCharacter,
+    api::SelectedCharacterFields,
     boundary::{BoundaryError, WorkerBoundary},
     config::CredentialMaterial,
     machine::RealmDiscoveryMachine,
@@ -28,7 +32,11 @@ trait LoginTransport: Read + Write + Send {
 trait TransportFactory: Send {
     type Transport: LoginTransport;
 
-    fn connect(&mut self, config: &ClientConfig) -> io::Result<Self::Transport>;
+    fn connect_login(&mut self, config: &ClientConfig) -> io::Result<Self::Transport>;
+
+    fn connect_world(&mut self, config: &ClientConfig) -> io::Result<Self::Transport> {
+        self.connect_login(config)
+    }
 }
 
 trait MonotonicClock: Send {
@@ -39,28 +47,37 @@ trait EntropySource: Send {
     fn fill(&mut self, destination: &mut [u8]) -> Result<(), ()>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkerTarget {
+    RealmDiscovery,
+    CharacterSelection,
+}
+
 pub(crate) fn spawn_production_worker(
     loaded: LoadedClientConfig,
     mut boundary: WorkerBoundary,
+    target: WorkerTarget,
 ) -> Result<JoinHandle<()>, BoundaryError> {
     thread::Builder::new()
         .name("miazcore-realm-discovery".to_owned())
         .spawn(move || {
             let (config, mut credentials) = loaded.into_parts();
             credentials.normalize_for_login();
-            run_worker_loop(
+            run_worker_loop_for(
                 &config,
                 &credentials,
                 &mut boundary,
                 &mut TcpTransportFactory,
                 &mut SystemClock::new(),
                 &mut SystemEntropy,
+                target,
             );
             boundary.mark_stopped();
         })
         .map_err(|_| BoundaryError::WorkerStopped)
 }
 
+#[cfg(test)]
 fn run_worker_loop<F, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
@@ -68,6 +85,31 @@ fn run_worker_loop<F, C, E>(
     factory: &mut F,
     clock: &mut C,
     entropy: &mut E,
+) where
+    F: TransportFactory,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    run_worker_loop_for(
+        config,
+        credentials,
+        boundary,
+        factory,
+        clock,
+        entropy,
+        WorkerTarget::RealmDiscovery,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_worker_loop_for<F, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    factory: &mut F,
+    clock: &mut C,
+    entropy: &mut E,
+    target: WorkerTarget,
 ) where
     F: TransportFactory,
     C: MonotonicClock,
@@ -93,9 +135,17 @@ fn run_worker_loop<F, C, E>(
                     }
                     continue;
                 }
-                match discover(config, credentials, boundary, factory, clock, entropy) {
-                    Ok(realm) => {
-                        if boundary.discovered(realm) {
+                match discover(
+                    config,
+                    credentials,
+                    boundary,
+                    factory,
+                    clock,
+                    entropy,
+                    target,
+                ) {
+                    Ok(character) => {
+                        if character.is_none_or(|character| boundary.selected(character)) {
                             boundary.disconnect();
                         }
                     }
@@ -124,7 +174,8 @@ fn discover<F, C, E>(
     factory: &mut F,
     clock: &mut C,
     entropy: &mut E,
-) -> Result<DiscoveredRealm, DiscoveryError>
+    target: WorkerTarget,
+) -> Result<Option<SelectedCharacter>, DiscoveryError>
 where
     F: TransportFactory,
     C: MonotonicClock,
@@ -132,15 +183,26 @@ where
 {
     check_cancelled(boundary)?;
     let started = clock.now();
+    let connection_count = if target == WorkerTarget::CharacterSelection {
+        2
+    } else {
+        1
+    };
+    let io_count = if target == WorkerTarget::CharacterSelection {
+        8
+    } else {
+        4
+    };
     let budget = config
         .connect_timeout()
-        .checked_add(config.io_timeout().saturating_mul(4))
+        .saturating_mul(connection_count)
+        .checked_add(config.io_timeout().saturating_mul(io_count))
         .ok_or_else(timeout_failure)?;
     let deadline = started.checked_add(budget).ok_or_else(timeout_failure)?;
     let mut machine = RealmDiscoveryMachine::new();
     transition(boundary, machine.begin(), EntryStage::LoginConnection)?;
 
-    let mut transport = factory.connect(config).map_err(|error| {
+    let mut transport = factory.connect_login(config).map_err(|error| {
         io_failure(
             error.kind(),
             "login connection",
@@ -148,7 +210,7 @@ where
         )
     })?;
     check_cancelled(boundary)?;
-    let result = exchange(
+    let login_result = exchange(
         config,
         credentials,
         boundary,
@@ -159,6 +221,51 @@ where
         deadline,
     );
     let _ = transport.close();
+    let (realm, session_key) = match login_result {
+        Ok(result) => result,
+        Err(error) => {
+            machine.fail();
+            return Err(error);
+        }
+    };
+    machine
+        .realm_discovered()
+        .map_err(|_| internal_transition_failure())?;
+    if !boundary.discovered(realm) {
+        return Err(DiscoveryError::Boundary);
+    }
+    if target == WorkerTarget::RealmDiscovery {
+        machine
+            .complete_after_realm()
+            .map_err(|_| internal_transition_failure())?;
+        return Ok(None);
+    }
+
+    transition(
+        boundary,
+        machine.authenticating_world(),
+        EntryStage::WorldAuthentication,
+    )?;
+    let mut world_transport = factory.connect_world(config).map_err(|error| {
+        world_io_failure(
+            error.kind(),
+            "world connection",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+    check_cancelled(boundary)?;
+    let result = select_character(
+        config,
+        credentials,
+        boundary,
+        &mut machine,
+        &mut world_transport,
+        clock,
+        entropy,
+        deadline,
+        &session_key,
+    );
+    let _ = world_transport.close();
     if result.is_err() {
         machine.fail();
     }
@@ -175,13 +282,13 @@ fn exchange<T, C, E>(
     clock: &mut C,
     entropy: &mut E,
     deadline: Duration,
-) -> Result<DiscoveredRealm, DiscoveryError>
+) -> Result<(DiscoveredRealm, Zeroizing<[u8; 40]>), DiscoveryError>
 where
     T: LoginTransport,
     C: MonotonicClock,
     E: EntropySource,
 {
-    authenticate(
+    let session_key = authenticate(
         credentials,
         boundary,
         machine,
@@ -190,7 +297,8 @@ where
         entropy,
         deadline,
     )?;
-    select_realm(config, boundary, machine, transport, clock, deadline)
+    let realm = select_realm(config, boundary, machine, transport, clock, deadline)?;
+    Ok((realm, session_key))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -202,7 +310,7 @@ fn authenticate<T, C, E>(
     clock: &mut C,
     entropy: &mut E,
     deadline: Duration,
-) -> Result<(), DiscoveryError>
+) -> Result<Zeroizing<[u8; 40]>, DiscoveryError>
 where
     T: LoginTransport,
     C: MonotonicClock,
@@ -288,7 +396,7 @@ where
         )));
     }
     check_deadline(clock, deadline)?;
-    Ok(())
+    Ok(Zeroizing::new(*proof.session_key().as_bytes()))
 }
 
 fn select_realm<T, C>(
@@ -340,9 +448,6 @@ where
     {
         return Err(realm_mismatch());
     }
-    machine
-        .complete()
-        .map_err(|_| internal_transition_failure())?;
     DiscoveredRealm::new(
         u32::from(realm.id()),
         realm.name(),
@@ -350,6 +455,184 @@ where
         endpoint,
     )
     .map_err(|_| realm_mismatch())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_character<T, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    machine: &mut RealmDiscoveryMachine,
+    transport: &mut T,
+    clock: &mut C,
+    entropy: &mut E,
+    deadline: Duration,
+    session_key: &[u8; 40],
+) -> Result<Option<SelectedCharacter>, DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    check_cancelled(boundary)?;
+    check_deadline(clock, deadline)?;
+    let challenge_frame = read_plain_world_server_frame(transport).map_err(|error| {
+        world_protocol_failure(
+            error,
+            "world authentication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+    let challenge = decode_world_auth_challenge(&challenge_frame).map_err(|error| {
+        world_protocol_failure(
+            error,
+            "world authentication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+
+    let mut client_seed = Zeroizing::new([0_u8; 4]);
+    entropy
+        .fill(client_seed.as_mut())
+        .map_err(|()| entropy_failure())?;
+    check_cancelled(boundary)?;
+    let client_seed = u32::from_le_bytes(*client_seed);
+    let auth_frame = encode_world_auth_session_frame(
+        credentials.account(),
+        config.identity().realm_id(),
+        client_seed,
+        challenge.server_seed(),
+        session_key,
+    )
+    .map_err(|error| {
+        world_protocol_failure(
+            error,
+            "world authentication",
+            RecoveryAction::FixConfiguration,
+        )
+    })?;
+    transport.write_all(auth_frame.as_ref()).map_err(|error| {
+        world_io_failure(
+            error.kind(),
+            "world authentication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+    check_cancelled(boundary)?;
+
+    let mut server_stream = WorldServerStream::new(session_key);
+    let mut client_stream = WorldClientStream::new(session_key);
+    let auth_response = server_stream.read_frame(transport).map_err(|error| {
+        world_protocol_failure(
+            error,
+            "world authentication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+    if auth_response.opcode() != SMSG_AUTH_RESPONSE {
+        return Err(world_protocol_drift("world authentication"));
+    }
+    match decode_world_auth_response(auth_response.payload()).map_err(|error| {
+        world_protocol_failure(
+            error,
+            "world authentication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })? {
+        WorldAuthResponse::Accepted => {}
+        WorldAuthResponse::Rejected => return Err(world_authentication_rejected()),
+    }
+
+    transition(
+        boundary,
+        machine.selecting_character(),
+        EntryStage::CharacterSelection,
+    )?;
+    let request = client_stream
+        .encode_frame(CMSG_CHAR_ENUM, &[])
+        .map_err(|error| {
+            world_protocol_failure(
+                error,
+                "character selection",
+                RecoveryAction::CheckReferenceRealm,
+            )
+        })?;
+    transport.write_all(&request).map_err(|error| {
+        world_io_failure(
+            error.kind(),
+            "character selection",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+
+    let selected = read_selected_character(
+        config,
+        boundary,
+        transport,
+        clock,
+        deadline,
+        &mut server_stream,
+    )?;
+    machine
+        .complete()
+        .map_err(|_| internal_transition_failure())?;
+    Ok(Some(selected))
+}
+
+fn read_selected_character<T, C>(
+    config: &ClientConfig,
+    boundary: &WorkerBoundary,
+    transport: &mut T,
+    clock: &mut C,
+    deadline: Duration,
+    server_stream: &mut WorldServerStream,
+) -> Result<SelectedCharacter, DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    for _ in 0..64 {
+        check_cancelled(boundary)?;
+        check_deadline(clock, deadline)?;
+        let frame = server_stream.read_frame(transport).map_err(|error| {
+            world_protocol_failure(
+                error,
+                "character selection",
+                RecoveryAction::CheckReferenceRealm,
+            )
+        })?;
+        if frame.opcode() != SMSG_CHAR_ENUM {
+            continue;
+        }
+        let characters = decode_character_enumeration(frame.payload()).map_err(|error| {
+            world_protocol_failure(
+                error,
+                "character selection",
+                RecoveryAction::CheckReferenceRealm,
+            )
+        })?;
+        let mut matches = characters
+            .into_iter()
+            .filter(|character| character.name() == config.identity().character_name());
+        let selected = matches.next().ok_or_else(character_absent)?;
+        if matches.next().is_some() {
+            return Err(character_duplicate());
+        }
+        return SelectedCharacter::new(SelectedCharacterFields {
+            guid: selected.guid(),
+            name: selected.name().to_owned(),
+            race: selected.race(),
+            class: selected.class(),
+            gender: selected.gender(),
+            level: selected.level(),
+            area_id: selected.area_id(),
+            map_id: selected.map_id(),
+            position: selected.position(),
+        })
+        .map_err(|_| world_protocol_drift("character selection"));
+    }
+
+    Err(world_protocol_drift("character selection"))
 }
 
 fn transition(
@@ -406,6 +689,42 @@ fn realm_mismatch() -> DiscoveryError {
     ))
 }
 
+fn world_authentication_rejected() -> DiscoveryError {
+    DiscoveryError::Failure(ClientFailure::new(
+        FailureCategory::Authentication,
+        "world authentication",
+        "world session authentication was rejected",
+        RecoveryAction::CheckCredentials,
+    ))
+}
+
+fn character_absent() -> DiscoveryError {
+    DiscoveryError::Failure(ClientFailure::new(
+        FailureCategory::Configuration,
+        "character selection",
+        "configured character was absent from the authenticated realm",
+        RecoveryAction::FixConfiguration,
+    ))
+}
+
+fn character_duplicate() -> DiscoveryError {
+    DiscoveryError::Failure(ClientFailure::new(
+        FailureCategory::ProtocolIncompatibility,
+        "character selection",
+        "authenticated realm returned duplicate configured characters",
+        RecoveryAction::CheckReferenceRealm,
+    ))
+}
+
+fn world_protocol_drift(stage: &'static str) -> DiscoveryError {
+    DiscoveryError::Failure(ClientFailure::new(
+        FailureCategory::ProtocolIncompatibility,
+        stage,
+        "Reference Realm world protocol response was incompatible",
+        RecoveryAction::CheckReferenceRealm,
+    ))
+}
+
 fn timeout_failure() -> DiscoveryError {
     DiscoveryError::Failure(ClientFailure::new(
         FailureCategory::Timeout,
@@ -455,6 +774,28 @@ fn io_failure(
     DiscoveryError::Failure(ClientFailure::new(category, stage, context, recovery))
 }
 
+fn world_io_failure(
+    kind: io::ErrorKind,
+    stage: &'static str,
+    recovery: RecoveryAction,
+) -> DiscoveryError {
+    let (category, context, recovery) =
+        if matches!(kind, io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
+            (
+                FailureCategory::Timeout,
+                "world transport operation timed out",
+                RecoveryAction::RetryExplicitly,
+            )
+        } else {
+            (
+                FailureCategory::Transport,
+                "world transport operation failed",
+                recovery,
+            )
+        };
+    DiscoveryError::Failure(ClientFailure::new(category, stage, context, recovery))
+}
+
 fn protocol_failure(
     error: ProtocolError,
     stage: &'static str,
@@ -479,19 +820,48 @@ fn protocol_failure(
     }
 }
 
+fn world_protocol_failure(
+    error: ProtocolError,
+    stage: &'static str,
+    recovery: RecoveryAction,
+) -> DiscoveryError {
+    match error {
+        ProtocolError::Io(kind) => world_io_failure(kind, stage, recovery),
+        ProtocolError::InvalidCredentialEncoding => DiscoveryError::Failure(ClientFailure::new(
+            FailureCategory::Configuration,
+            stage,
+            "credential encoding is incompatible with the world protocol",
+            RecoveryAction::FixConfiguration,
+        )),
+        ProtocolError::MalformedFrame
+        | ProtocolError::UnsupportedSecurity
+        | ProtocolError::InvalidSrpParameters => world_protocol_drift(stage),
+    }
+}
+
 struct TcpTransportFactory;
 
 impl TransportFactory for TcpTransportFactory {
     type Transport = TcpLoginTransport;
 
-    fn connect(&mut self, config: &ClientConfig) -> io::Result<Self::Transport> {
-        let stream =
-            TcpStream::connect_timeout(&config.login_endpoint(), config.connect_timeout())?;
-        stream.set_read_timeout(Some(config.io_timeout()))?;
-        stream.set_write_timeout(Some(config.io_timeout()))?;
-        stream.set_nodelay(true)?;
-        Ok(TcpLoginTransport(stream))
+    fn connect_login(&mut self, config: &ClientConfig) -> io::Result<Self::Transport> {
+        connect_tcp(config.login_endpoint(), config)
     }
+
+    fn connect_world(&mut self, config: &ClientConfig) -> io::Result<Self::Transport> {
+        connect_tcp(config.world_endpoint(), config)
+    }
+}
+
+fn connect_tcp(
+    endpoint: std::net::SocketAddr,
+    config: &ClientConfig,
+) -> io::Result<TcpLoginTransport> {
+    let stream = TcpStream::connect_timeout(&endpoint, config.connect_timeout())?;
+    stream.set_read_timeout(Some(config.io_timeout()))?;
+    stream.set_write_timeout(Some(config.io_timeout()))?;
+    stream.set_nodelay(true)?;
+    Ok(TcpLoginTransport(stream))
 }
 
 struct TcpLoginTransport(TcpStream);
@@ -563,8 +933,15 @@ mod tests {
         CredentialPaths, FailureCategory, SanitizedIdentity, boundary::new_boundary,
         config::CredentialMaterial,
     };
+    use client_protocol::{
+        HeaderCipher, HeaderDirection, LoginChallengeResponse, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM,
+        calculate_srp_client_proof, read_logon_challenge_response,
+    };
 
-    use super::{EntropySource, LoginTransport, MonotonicClock, TransportFactory, run_worker_loop};
+    use super::{
+        EntropySource, LoginTransport, MonotonicClock, TransportFactory, WorkerTarget,
+        run_worker_loop, run_worker_loop_for,
+    };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -622,6 +999,208 @@ mod tests {
         );
         assert!(matches!(
             run.events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn fragmented_world_success_selects_exact_character_and_stops_before_player_login() {
+        let run = run_character_scripted(
+            world_success_script(),
+            1,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+
+        let character = run.snapshot.selected_character.as_ref().unwrap();
+        assert_eq!(character.guid(), 0x1234);
+        assert_eq!(character.name(), "Miaztest");
+        assert_eq!(character.level(), 80);
+        for (actual, expected) in character.position().into_iter().zip([1.25, -2.5, 3.75]) {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
+        assert_eq!(run.snapshot.phase, ClientPhase::Offline);
+        assert!(run.login_state.closed.load(Ordering::Acquire));
+        assert!(run.world_state.closed.load(Ordering::Acquire));
+        assert_eq!(run.login_state.connections.load(Ordering::Acquire), 1);
+        assert_eq!(run.world_state.connections.load(Ordering::Acquire), 1);
+
+        let phases = run
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                ClientEventKind::PhaseChanged { phase } => Some(phase.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            [
+                ClientPhase::Offline,
+                ClientPhase::Entering(crate::EntryStage::LoginConnection),
+                ClientPhase::Entering(crate::EntryStage::LoginAuthentication),
+                ClientPhase::Entering(crate::EntryStage::RealmSelection),
+                ClientPhase::Entering(crate::EntryStage::WorldAuthentication),
+                ClientPhase::Entering(crate::EntryStage::CharacterSelection),
+                ClientPhase::Offline,
+            ]
+        );
+        assert!(run.events.iter().any(|event| matches!(
+            &event.kind,
+            ClientEventKind::CharacterSelected { character } if character.name() == "Miaztest"
+        )));
+
+        let world_writes = run.world_state.writes.lock().unwrap();
+        assert_eq!(world_writes.len(), 74 + 6);
+        assert_eq!(
+            u32::from_le_bytes(world_writes[2..6].try_into().unwrap()),
+            0x01ed
+        );
+    }
+
+    #[test]
+    fn world_auth_rejection_and_character_identity_drift_are_stable() {
+        let rejected = run_character_scripted(
+            world_script(&[(SMSG_AUTH_RESPONSE, vec![0x0d])]),
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&rejected, FailureCategory::Authentication);
+        assert_eq!(
+            rejected.snapshot.latest_failure.as_ref().unwrap().context(),
+            "world session authentication was rejected"
+        );
+
+        let absent = run_character_scripted(
+            world_script(&[
+                (SMSG_AUTH_RESPONSE, accepted_world_auth()),
+                (SMSG_CHAR_ENUM, vec![0]),
+            ]),
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&absent, FailureCategory::Configuration);
+        assert_eq!(
+            absent.snapshot.latest_failure.as_ref().unwrap().context(),
+            "configured character was absent from the authenticated realm"
+        );
+
+        let record = fixture("character-enum-body.hex");
+        let mut duplicate = Vec::with_capacity(record.len() * 2);
+        duplicate.push(2);
+        duplicate.extend_from_slice(&record[1..]);
+        duplicate.extend_from_slice(&record[1..]);
+        let duplicate = run_character_scripted(
+            world_script(&[
+                (SMSG_AUTH_RESPONSE, accepted_world_auth()),
+                (SMSG_CHAR_ENUM, duplicate),
+            ]),
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&duplicate, FailureCategory::ProtocolIncompatibility);
+    }
+
+    #[test]
+    fn world_cipher_drift_malformed_eof_and_timeout_fail_closed() {
+        let drifted = run_character_scripted(
+            world_script_with_invalid_encrypted_header(),
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&drifted, FailureCategory::ProtocolIncompatibility);
+
+        let mut malformed_challenge = fixture("world-auth-challenge-frame.hex");
+        malformed_challenge[4..8].fill(0);
+        let malformed = run_character_scripted(
+            malformed_challenge,
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&malformed, FailureCategory::ProtocolIncompatibility);
+
+        let mut eof = world_success_script();
+        eof.pop();
+        let eof = run_character_scripted(
+            eof,
+            usize::MAX,
+            None,
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&eof, FailureCategory::Transport);
+
+        let timeout = run_character_scripted(
+            Vec::new(),
+            usize::MAX,
+            Some(io::ErrorKind::TimedOut),
+            FixedClock::default(),
+            FixedEntropy::success(PRIVATE_EPHEMERAL),
+            config(),
+        );
+        assert_failed_character(&timeout, FailureCategory::Timeout);
+    }
+
+    #[test]
+    fn shutdown_during_world_authentication_closes_both_sessions_before_character_request() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let client = Arc::new(client);
+        client.send_control(ControlCommand::StartEntry).unwrap();
+        let login_state = ScriptState::default();
+        let world_state = ScriptState::default();
+        let mut factory = CharacterScriptFactory {
+            login_reads: Some(success_script()),
+            world_reads: Some(world_success_script()),
+            max_read: usize::MAX,
+            world_connect_error: None,
+            login_state: login_state.clone(),
+            world_state: world_state.clone(),
+        };
+        let cancelling_client = Arc::clone(&client);
+        let worker = thread::spawn(move || {
+            run_worker_loop_for(
+                &config,
+                &credentials,
+                &mut boundary,
+                &mut factory,
+                &mut FixedClock::default(),
+                &mut CancellingWorldEntropy {
+                    client: cancelling_client,
+                    calls: 0,
+                },
+                WorkerTarget::CharacterSelection,
+            );
+            boundary.mark_stopped();
+        });
+        worker.join().unwrap();
+
+        assert!(login_state.closed.load(Ordering::Acquire));
+        assert!(world_state.closed.load(Ordering::Acquire));
+        assert_eq!(world_state.writes.lock().unwrap().len(), 0);
+        assert_eq!(client.snapshot().phase, ClientPhase::Offline);
+        assert_eq!(client.snapshot().queue_counters.control_queued, 0);
+        assert!(matches!(
+            client.drain_events().last().map(|event| &event.kind),
             Some(ClientEventKind::Disconnected)
         ));
     }
@@ -866,6 +1445,61 @@ mod tests {
         .concat()
     }
 
+    fn accepted_world_auth() -> Vec<u8> {
+        vec![0x0c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+
+    fn world_success_script() -> Vec<u8> {
+        world_script(&[
+            (SMSG_AUTH_RESPONSE, accepted_world_auth()),
+            (0x0222, vec![0xaa, 0xbb, 0xcc]),
+            (SMSG_CHAR_ENUM, fixture("character-enum-body.hex")),
+        ])
+    }
+
+    fn world_script(frames: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let session_key = login_session_key();
+        let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, &session_key);
+        let mut script = fixture("world-auth-challenge-frame.hex");
+        for (opcode, payload) in frames {
+            let size = u16::try_from(payload.len() + 2).unwrap();
+            let mut header = [0_u8; 4];
+            header[..2].copy_from_slice(&size.to_be_bytes());
+            header[2..].copy_from_slice(&opcode.to_le_bytes());
+            cipher.apply(&mut header);
+            script.extend_from_slice(&header);
+            script.extend_from_slice(payload);
+        }
+        script
+    }
+
+    fn world_script_with_invalid_encrypted_header() -> Vec<u8> {
+        let session_key = login_session_key();
+        let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, &session_key);
+        let mut invalid_header = [0_u8, 1, 0xee, 0x01];
+        cipher.apply(&mut invalid_header);
+        [
+            fixture("world-auth-challenge-frame.hex"),
+            invalid_header.to_vec(),
+        ]
+        .concat()
+    }
+
+    fn login_session_key() -> [u8; 40] {
+        let challenge = match read_logon_challenge_response(&mut Cursor::new(fixture(
+            "login-challenge-response.hex",
+        )))
+        .unwrap()
+        {
+            LoginChallengeResponse::Accepted(challenge) => challenge,
+            LoginChallengeResponse::Rejected { .. } => panic!("synthetic challenge rejected"),
+        };
+        let proof =
+            calculate_srp_client_proof(b"LEARNER", b"ONLYFORVECTOR", &challenge, PRIVATE_EPHEMERAL)
+                .unwrap();
+        *proof.session_key().as_bytes()
+    }
+
     fn fixture(name: &str) -> Vec<u8> {
         let value = match name {
             "login-challenge-request.hex" => {
@@ -886,10 +1520,17 @@ mod tests {
             "realm-response.hex" => {
                 include_str!("../../client_protocol/tests/fixtures/v1/realm-response.hex")
             }
+            "world-auth-challenge-frame.hex" => include_str!(
+                "../../client_protocol/tests/fixtures/v1/world-auth-challenge-frame.hex"
+            ),
+            "character-enum-body.hex" => {
+                include_str!("../../client_protocol/tests/fixtures/v1/character-enum-body.hex")
+            }
             _ => panic!("unknown fixture"),
         };
         value
-            .trim()
+            .split_whitespace()
+            .collect::<String>()
             .as_bytes()
             .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
@@ -900,6 +1541,72 @@ mod tests {
         snapshot: crate::ClientSnapshot,
         events: Vec<ClientEvent>,
         state: ScriptState,
+    }
+
+    struct CharacterScriptedRun {
+        snapshot: crate::ClientSnapshot,
+        events: Vec<ClientEvent>,
+        login_state: ScriptState,
+        world_state: ScriptState,
+    }
+
+    fn assert_failed_character(run: &CharacterScriptedRun, category: FailureCategory) {
+        assert!(matches!(run.snapshot.phase, ClientPhase::Failed(_)));
+        assert_eq!(
+            run.snapshot.latest_failure.as_ref().unwrap().category(),
+            category
+        );
+        assert!(run.login_state.closed.load(Ordering::Acquire));
+        if run.world_state.connections.load(Ordering::Acquire) > 0
+            && category != FailureCategory::Timeout
+        {
+            assert!(run.world_state.closed.load(Ordering::Acquire));
+        }
+    }
+
+    fn run_character_scripted<E>(
+        world_reads: Vec<u8>,
+        max_read: usize,
+        world_connect_error: Option<io::ErrorKind>,
+        mut clock: FixedClock,
+        mut entropy: E,
+        config: crate::ClientConfig,
+    ) -> CharacterScriptedRun
+    where
+        E: EntropySource + 'static,
+    {
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        client.send_control(ControlCommand::StartEntry).unwrap();
+        let login_state = ScriptState::default();
+        let world_state = ScriptState::default();
+        let mut factory = CharacterScriptFactory {
+            login_reads: Some(success_script()),
+            world_reads: Some(world_reads),
+            max_read,
+            world_connect_error,
+            login_state: login_state.clone(),
+            world_state: world_state.clone(),
+        };
+        let worker = thread::spawn(move || {
+            run_worker_loop_for(
+                &config,
+                &credentials,
+                &mut boundary,
+                &mut factory,
+                &mut clock,
+                &mut entropy,
+                WorkerTarget::CharacterSelection,
+            );
+            boundary.mark_stopped();
+        });
+        worker.join().unwrap();
+        CharacterScriptedRun {
+            snapshot: client.snapshot(),
+            events: client.drain_events(),
+            login_state,
+            world_state,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -978,7 +1685,7 @@ mod tests {
     impl TransportFactory for ScriptFactory {
         type Transport = ScriptTransport;
 
-        fn connect(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+        fn connect_login(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
             self.state.connections.fetch_add(1, Ordering::AcqRel);
             if let Some(kind) = self.connect_error {
                 return Err(io::Error::from(kind));
@@ -987,6 +1694,40 @@ mod tests {
                 reads: Cursor::new(self.reads.take().unwrap_or_default()),
                 max_read: self.max_read,
                 state: self.state.clone(),
+            })
+        }
+    }
+
+    struct CharacterScriptFactory {
+        login_reads: Option<Vec<u8>>,
+        world_reads: Option<Vec<u8>>,
+        max_read: usize,
+        world_connect_error: Option<io::ErrorKind>,
+        login_state: ScriptState,
+        world_state: ScriptState,
+    }
+
+    impl TransportFactory for CharacterScriptFactory {
+        type Transport = ScriptTransport;
+
+        fn connect_login(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            self.login_state.connections.fetch_add(1, Ordering::AcqRel);
+            Ok(ScriptTransport {
+                reads: Cursor::new(self.login_reads.take().unwrap_or_default()),
+                max_read: self.max_read,
+                state: self.login_state.clone(),
+            })
+        }
+
+        fn connect_world(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            self.world_state.connections.fetch_add(1, Ordering::AcqRel);
+            if let Some(kind) = self.world_connect_error {
+                return Err(io::Error::from(kind));
+            }
+            Ok(ScriptTransport {
+                reads: Cursor::new(self.world_reads.take().unwrap_or_default()),
+                max_read: self.max_read,
+                state: self.world_state.clone(),
             })
         }
     }
@@ -1076,7 +1817,7 @@ mod tests {
             if self.fails {
                 return Err(());
             }
-            destination.copy_from_slice(&self.value);
+            destination.copy_from_slice(&self.value[..destination.len()]);
             Ok(())
         }
     }
@@ -1084,6 +1825,22 @@ mod tests {
     struct CancellingEntropy {
         client: Arc<crate::boundary::SessionClient>,
         value: [u8; 32],
+    }
+
+    struct CancellingWorldEntropy {
+        client: Arc<crate::boundary::SessionClient>,
+        calls: usize,
+    }
+
+    impl EntropySource for CancellingWorldEntropy {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), ()> {
+            self.calls = self.calls.saturating_add(1);
+            destination.copy_from_slice(&PRIVATE_EPHEMERAL[..destination.len()]);
+            if self.calls == 2 {
+                self.client.request_shutdown();
+            }
+            Ok(())
+        }
     }
 
     impl EntropySource for CancellingEntropy {

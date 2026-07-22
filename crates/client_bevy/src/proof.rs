@@ -8,8 +8,9 @@ use bevy::{
 
 use crate::{ClientScheduleSet, DiagnosticView, camera::CameraRig, world::OfflinePresentation};
 
-const CAPTURE_FRAME: u32 = 45;
-const TIMEOUT_FRAME: u32 = 600;
+// Leave enough presented frames for Metal pipeline creation on a cold shader cache.
+const CAPTURE_FRAME: u32 = 180;
+const TIMEOUT_FRAME: u32 = 900;
 
 pub struct RenderProofPlugin {
     output: PathBuf,

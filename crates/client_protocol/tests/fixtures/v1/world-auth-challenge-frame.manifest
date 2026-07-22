@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_AUTH_CHALLENGE/0x01EC
+semantics=plain world challenge frame with fixed synthetic server seed
+byte_length=44
+sha256=2c9848138de90977d32425610ce853bd2f18c877187fd9172d63fcf550515a12
+provenance=manually framed from pinned schemas with fixed synthetic values
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-auth-challenge-frame.hex

@@ -12,7 +12,8 @@ use std::{
 use crate::{
     CONTROL_CAPACITY, ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot,
     CommandKind, ControlCommand, DiscoveredRealm, EVENT_CAPACITY, FailureCategory, MovementIntent,
-    QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SemanticDiagnostic,
+    QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter,
+    SemanticDiagnostic,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +184,18 @@ impl WorkerBoundary {
                 .fetch_add(1, Ordering::AcqRel);
         }
         self.publish(ClientEventKind::RealmDiscovered { realm })
+    }
+
+    pub(crate) fn selected(&mut self, character: SelectedCharacter) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.selected_character = Some(character.clone());
+            current.latest_failure = None;
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish(ClientEventKind::CharacterSelected { character })
     }
 
     pub(crate) fn reject(&mut self, command: CommandKind, failure: ClientFailure) -> bool {

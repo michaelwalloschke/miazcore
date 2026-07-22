@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_AUTH_RESPONSE+unknown+SMSG_CHAR_ENUM
+semantics=three sequential encrypted headers with complete plaintext payloads and one safe-skip opcode
+byte_length=305
+sha256=5fb6ecd310877c16eb7063160f2aa1e68ba84b3b4df614ff16376a191e0fc668
+provenance=independent Python standard-library HMAC-SHA1 RC4 and manual framing
+upstream_pin=wow_srp/25ffab6433e1ee5eee629200cf42b592c1f36121
+payload=world-server-encrypted-stream.hex

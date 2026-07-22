@@ -2,6 +2,7 @@
 
 mod api;
 mod boundary;
+mod character;
 mod config;
 mod machine;
 mod offline;
@@ -12,9 +13,10 @@ pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
     ControlCommand, DiscoveredRealm, EntryStage, FailureCategory, IdentityError, MovementIntent,
     MovementIntentError, PoseSource, ProofStage, QueueCounters, Recovery, RecoveryAction,
-    SanitizedIdentity, SanitizedText, SemanticDiagnostic, WorldPose,
+    SanitizedIdentity, SanitizedText, SelectedCharacter, SemanticDiagnostic, WorldPose,
 };
 pub use boundary::BoundaryError;
+pub use character::{CharacterSelectionEvidence, CharacterSelectionSession};
 pub use config::{
     ClientConfig, ClientConfigSpec, ConfigError, CredentialFileKind, CredentialFileProblem,
     CredentialPaths, LoadedClientConfig,

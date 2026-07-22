@@ -7,6 +7,7 @@
 mod header_crypto;
 mod login;
 mod srp;
+mod world;
 
 pub use header_crypto::{HeaderCipher, HeaderDirection};
 pub use login::{
@@ -15,6 +16,12 @@ pub use login::{
     read_realm_list_response,
 };
 pub use srp::{ClientSrpProof, SessionKey, calculate_srp_client_proof};
+pub use world::{
+    CMSG_AUTH_SESSION, CMSG_CHAR_ENUM, SMSG_AUTH_CHALLENGE, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM,
+    WorldAuthChallenge, WorldAuthResponse, WorldCharacter, WorldClientStream, WorldServerFrame,
+    WorldServerStream, decode_character_enumeration, decode_world_auth_challenge,
+    decode_world_auth_response, encode_world_auth_session_frame, read_plain_world_server_frame,
+};
 
 /// The only client build accepted by the World-entry Slice.
 pub const TARGET_CLIENT_BUILD: u16 = 12_340;

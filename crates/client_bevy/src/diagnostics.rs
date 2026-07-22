@@ -216,6 +216,11 @@ fn format_event_tail(view: &DiagnosticView) -> String {
                 realm.realm_id(),
                 realm.endpoint()
             ),
+            ClientEventKind::CharacterSelected { character } => format!(
+                "character selected -> {} / {}",
+                character.guid(),
+                character.name()
+            ),
             ClientEventKind::PoseObserved { source, .. } => format!("pose observed / {source:?}"),
             ClientEventKind::MovementSubmitted { .. } => "movement submitted".to_owned(),
             ClientEventKind::CommandRejected { command, failure } => format!(

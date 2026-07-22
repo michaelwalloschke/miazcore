@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_CHAR_ENUM+synthetic+CMSG_CHAR_ENUM
+semantics=three sequential encrypted client headers with complete plaintext payloads
+byte_length=21
+sha256=976f924f3e1a0ee33a22fbedacf51dc2880dcde017beb86a73cb492ff0980987
+provenance=independent Python standard-library HMAC-SHA1 RC4 and manual framing
+upstream_pin=wow_srp/25ffab6433e1ee5eee629200cf42b592c1f36121
+payload=world-client-encrypted-stream.hex

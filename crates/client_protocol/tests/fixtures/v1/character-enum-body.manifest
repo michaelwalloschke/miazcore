@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_CHAR_ENUM-body/0x003B
+semantics=one complete synthetic Miaztest character record including all twenty-three equipment entries
+byte_length=279
+sha256=233603530d777757759f7eb8d66af77938bbd7cc0b10abc4e4af95b44450fe4a
+provenance=manually encoded from the pinned independent Wrath character schema
+upstream_pin=wow_messages/e1c9e15a8b94fce76cbd433cf49bd67c376a99d7
+payload=character-enum-body.hex

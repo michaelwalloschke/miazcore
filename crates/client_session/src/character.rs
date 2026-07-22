@@ -6,14 +6,14 @@ use crate::{
     runtime,
 };
 
-/// Redacted evidence returned after the headless discovery worker has stopped.
+/// Redacted evidence returned after the headless character-selection worker has stopped.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RealmDiscoveryEvidence {
+pub struct CharacterSelectionEvidence {
     snapshot: ClientSnapshot,
     events: Vec<ClientEvent>,
 }
 
-impl RealmDiscoveryEvidence {
+impl CharacterSelectionEvidence {
     #[must_use]
     pub const fn snapshot(&self) -> &ClientSnapshot {
         &self.snapshot
@@ -25,16 +25,17 @@ impl RealmDiscoveryEvidence {
     }
 }
 
-/// Engine-independent, one-attempt authenticated realm-discovery session.
+/// Engine-independent, one-attempt authenticated character-selection session.
 ///
-/// The production Bevy application deliberately continues to use `OfflineSession`.
-pub struct RealmDiscoverySession {
+/// This session intentionally disconnects before player login. The production Bevy
+/// application continues to use `OfflineSession` until the live-entry slice.
+pub struct CharacterSelectionSession {
     client: SessionClient,
     worker: Option<JoinHandle<()>>,
 }
 
-impl RealmDiscoverySession {
-    /// Start the dedicated blocking-I/O worker behind the final semantic boundary.
+impl CharacterSelectionSession {
+    /// Start the dedicated blocking-I/O worker behind the semantic boundary.
     ///
     /// # Errors
     ///
@@ -45,7 +46,7 @@ impl RealmDiscoverySession {
         let worker = runtime::spawn_production_worker(
             loaded,
             boundary,
-            runtime::WorkerTarget::RealmDiscovery,
+            runtime::WorkerTarget::CharacterSelection,
         )?;
         Ok(Self {
             client,
@@ -79,9 +80,9 @@ impl RealmDiscoverySession {
     /// # Errors
     ///
     /// Returns an error if the worker panicked.
-    pub fn wait(mut self) -> Result<RealmDiscoveryEvidence, BoundaryError> {
+    pub fn wait(mut self) -> Result<CharacterSelectionEvidence, BoundaryError> {
         self.join_worker()?;
-        Ok(RealmDiscoveryEvidence {
+        Ok(CharacterSelectionEvidence {
             snapshot: self.client.snapshot(),
             events: self.client.drain_events(),
         })
@@ -109,7 +110,7 @@ impl RealmDiscoverySession {
     }
 }
 
-impl Drop for RealmDiscoverySession {
+impl Drop for CharacterSelectionSession {
     fn drop(&mut self) {
         let _ = self.stop_worker();
     }

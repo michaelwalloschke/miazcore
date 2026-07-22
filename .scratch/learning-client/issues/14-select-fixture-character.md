@@ -1,7 +1,7 @@
 # Select Miaztest through an Authenticated World Session
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Discover the Reference Realm through Authenticated Login](13-discover-reference-realm.md)
 
 ## Parent
@@ -16,8 +16,8 @@ Implement the world challenge and session proof for build 12340, independent inb
 
 ## Entry gate
 
-- [ ] Ticket 13 passes deterministically and against the live Reference Realm on the current branch.
-- [ ] The entry evidence and exact predecessor commit are recorded.
+- [x] Ticket 13 passes deterministically and against the live Reference Realm on the current branch.
+- [x] The entry evidence and exact predecessor commit are recorded.
 
 ## Acceptance criteria
 

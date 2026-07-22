@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_AUTH_SESSION/0x01ED
+semantics=plain world authentication frame for synthetic account realm and seeds
+byte_length=74
+sha256=638ea51b6ccbf351b304696f0ee58b2aea23ec40caf18a1623a2ff9d081c80ee
+provenance=independent Python standard-library SHA-1 and manual framing
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-auth-session-frame.hex
