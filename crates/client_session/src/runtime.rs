@@ -22,7 +22,7 @@ use crate::{
     api::SelectedCharacterFields,
     boundary::{BoundaryError, WorkerBoundary},
     config::CredentialMaterial,
-    machine::RealmDiscoveryMachine,
+    machine::EntryMachine,
 };
 
 trait LoginTransport: Read + Write + Send {
@@ -199,7 +199,7 @@ where
         .checked_add(config.io_timeout().saturating_mul(io_count))
         .ok_or_else(timeout_failure)?;
     let deadline = started.checked_add(budget).ok_or_else(timeout_failure)?;
-    let mut machine = RealmDiscoveryMachine::new();
+    let mut machine = EntryMachine::new();
     transition(boundary, machine.begin(), EntryStage::LoginConnection)?;
 
     let mut transport = factory.connect_login(config).map_err(|error| {
@@ -209,7 +209,6 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
-    check_cancelled(boundary)?;
     let login_result = exchange(
         config,
         credentials,
@@ -253,7 +252,6 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
-    check_cancelled(boundary)?;
     let result = select_character(
         config,
         credentials,
@@ -277,7 +275,7 @@ fn exchange<T, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
     boundary: &mut WorkerBoundary,
-    machine: &mut RealmDiscoveryMachine,
+    machine: &mut EntryMachine,
     transport: &mut T,
     clock: &mut C,
     entropy: &mut E,
@@ -305,7 +303,7 @@ where
 fn authenticate<T, C, E>(
     credentials: &CredentialMaterial,
     boundary: &mut WorkerBoundary,
-    machine: &mut RealmDiscoveryMachine,
+    machine: &mut EntryMachine,
     transport: &mut T,
     clock: &mut C,
     entropy: &mut E,
@@ -402,7 +400,7 @@ where
 fn select_realm<T, C>(
     config: &ClientConfig,
     boundary: &mut WorkerBoundary,
-    machine: &mut RealmDiscoveryMachine,
+    machine: &mut EntryMachine,
     transport: &mut T,
     clock: &mut C,
     deadline: Duration,
@@ -462,7 +460,7 @@ fn select_character<T, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
     boundary: &mut WorkerBoundary,
-    machine: &mut RealmDiscoveryMachine,
+    machine: &mut EntryMachine,
     transport: &mut T,
     clock: &mut C,
     entropy: &mut E,
@@ -757,21 +755,7 @@ fn io_failure(
     stage: &'static str,
     recovery: RecoveryAction,
 ) -> DiscoveryError {
-    let (category, context, recovery) =
-        if matches!(kind, io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
-            (
-                FailureCategory::Timeout,
-                "login transport operation timed out",
-                RecoveryAction::RetryExplicitly,
-            )
-        } else {
-            (
-                FailureCategory::Transport,
-                "login transport operation failed",
-                recovery,
-            )
-        };
-    DiscoveryError::Failure(ClientFailure::new(category, stage, context, recovery))
+    transport_failure(TransportKind::Login, kind, stage, recovery)
 }
 
 fn world_io_failure(
@@ -779,19 +763,40 @@ fn world_io_failure(
     stage: &'static str,
     recovery: RecoveryAction,
 ) -> DiscoveryError {
+    transport_failure(TransportKind::World, kind, stage, recovery)
+}
+
+#[derive(Clone, Copy)]
+enum TransportKind {
+    Login,
+    World,
+}
+
+fn transport_failure(
+    transport: TransportKind,
+    kind: io::ErrorKind,
+    stage: &'static str,
+    recovery: RecoveryAction,
+) -> DiscoveryError {
+    let (timed_out, failed) = match transport {
+        TransportKind::Login => (
+            "login transport operation timed out",
+            "login transport operation failed",
+        ),
+        TransportKind::World => (
+            "world transport operation timed out",
+            "world transport operation failed",
+        ),
+    };
     let (category, context, recovery) =
         if matches!(kind, io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
             (
                 FailureCategory::Timeout,
-                "world transport operation timed out",
+                timed_out,
                 RecoveryAction::RetryExplicitly,
             )
         } else {
-            (
-                FailureCategory::Transport,
-                "world transport operation failed",
-                recovery,
-            )
+            (FailureCategory::Transport, failed, recovery)
         };
     DiscoveryError::Failure(ClientFailure::new(category, stage, context, recovery))
 }
@@ -801,23 +806,7 @@ fn protocol_failure(
     stage: &'static str,
     recovery: RecoveryAction,
 ) -> DiscoveryError {
-    match error {
-        ProtocolError::Io(kind) => io_failure(kind, stage, recovery),
-        ProtocolError::InvalidCredentialEncoding => DiscoveryError::Failure(ClientFailure::new(
-            FailureCategory::Configuration,
-            stage,
-            "credential encoding is incompatible with the login protocol",
-            RecoveryAction::FixConfiguration,
-        )),
-        ProtocolError::MalformedFrame
-        | ProtocolError::UnsupportedSecurity
-        | ProtocolError::InvalidSrpParameters => DiscoveryError::Failure(ClientFailure::new(
-            FailureCategory::ProtocolIncompatibility,
-            stage,
-            "Reference Realm login protocol response was incompatible",
-            recovery,
-        )),
-    }
+    map_protocol_failure(TransportKind::Login, error, stage, recovery)
 }
 
 fn world_protocol_failure(
@@ -825,17 +814,41 @@ fn world_protocol_failure(
     stage: &'static str,
     recovery: RecoveryAction,
 ) -> DiscoveryError {
+    map_protocol_failure(TransportKind::World, error, stage, recovery)
+}
+
+fn map_protocol_failure(
+    transport: TransportKind,
+    error: ProtocolError,
+    stage: &'static str,
+    recovery: RecoveryAction,
+) -> DiscoveryError {
     match error {
-        ProtocolError::Io(kind) => world_io_failure(kind, stage, recovery),
+        ProtocolError::Io(kind) => transport_failure(transport, kind, stage, recovery),
         ProtocolError::InvalidCredentialEncoding => DiscoveryError::Failure(ClientFailure::new(
             FailureCategory::Configuration,
             stage,
-            "credential encoding is incompatible with the world protocol",
+            match transport {
+                TransportKind::Login => {
+                    "credential encoding is incompatible with the login protocol"
+                }
+                TransportKind::World => {
+                    "credential encoding is incompatible with the world protocol"
+                }
+            },
             RecoveryAction::FixConfiguration,
         )),
         ProtocolError::MalformedFrame
         | ProtocolError::UnsupportedSecurity
-        | ProtocolError::InvalidSrpParameters => world_protocol_drift(stage),
+        | ProtocolError::InvalidSrpParameters => DiscoveryError::Failure(ClientFailure::new(
+            FailureCategory::ProtocolIncompatibility,
+            stage,
+            match transport {
+                TransportKind::Login => "Reference Realm login protocol response was incompatible",
+                TransportKind::World => "Reference Realm world protocol response was incompatible",
+            },
+            recovery,
+        )),
     }
 }
 
@@ -1051,6 +1064,9 @@ mod tests {
             &event.kind,
             ClientEventKind::CharacterSelected { character } if character.name() == "Miaztest"
         )));
+        let formatted = format!("{:?} {:?}", run.snapshot, run.events);
+        assert!(!formatted.contains("ONLYFORVECTOR"));
+        assert!(!formatted.contains("session_key"));
 
         let world_writes = run.world_state.writes.lock().unwrap();
         assert_eq!(world_writes.len(), 74 + 6);
@@ -1434,6 +1450,10 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event.kind, ClientEventKind::CommandRejected { .. }))
         );
+        assert!(matches!(
+            run.events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
     }
 
     fn success_script() -> Vec<u8> {
@@ -1562,6 +1582,23 @@ mod tests {
         {
             assert!(run.world_state.closed.load(Ordering::Acquire));
         }
+        assert!(run.snapshot.selected_character.is_none());
+        assert_eq!(
+            run.events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::Entering(crate::EntryStage::LoginConnection),
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            run.events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
     }
 
     fn run_character_scripted<E>(

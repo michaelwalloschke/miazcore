@@ -227,7 +227,8 @@ impl WorkerBoundary {
         }
         let _ = self.publish(ClientEventKind::PhaseChanged {
             phase: ClientPhase::Failed(recovery),
-        }) && self.publish(ClientEventKind::CommandRejected { command, failure });
+        }) && self.publish(ClientEventKind::CommandRejected { command, failure })
+            && self.publish(ClientEventKind::Disconnected);
     }
 
     pub(crate) fn disconnect(&mut self) {

@@ -50,8 +50,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match mode.as_str() {
         "success" => verify_success(snapshot, evidence.events())?,
-        "nonexistent-account" => verify_failure(snapshot, FailureCategory::Authentication)?,
-        "absent-character" => verify_failure(snapshot, FailureCategory::Configuration)?,
+        "nonexistent-account" => verify_failure(
+            snapshot,
+            evidence.events(),
+            FailureCategory::Authentication,
+            &[EntryStage::LoginConnection, EntryStage::LoginAuthentication],
+            None,
+        )?,
+        "absent-character" => verify_failure(
+            snapshot,
+            evidence.events(),
+            FailureCategory::Configuration,
+            &[
+                EntryStage::LoginConnection,
+                EntryStage::LoginAuthentication,
+                EntryStage::RealmSelection,
+                EntryStage::WorldAuthentication,
+                EntryStage::CharacterSelection,
+            ],
+            Some(ABSENT_CHARACTER),
+        )?,
         _ => unreachable!(),
     }
     Ok(())
@@ -76,7 +94,15 @@ fn verify_success(
         .ok_or_else(|| io::Error::other("character selection produced no selected character"))?;
     if snapshot.phase != ClientPhase::Offline
         || character.name() != "Miaztest"
-        || !has_expected_semantic_path(events)
+        || entering_stages(events)
+            != [
+                EntryStage::LoginConnection,
+                EntryStage::LoginAuthentication,
+                EntryStage::RealmSelection,
+                EntryStage::WorldAuthentication,
+                EntryStage::CharacterSelection,
+            ]
+        || !has_success_events(events)
     {
         return Err(
             io::Error::other("character-selection evidence did not match the contract").into(),
@@ -95,52 +121,84 @@ fn verify_success(
 
 fn verify_failure(
     snapshot: &client_session::ClientSnapshot,
+    events: &[client_session::ClientEvent],
     expected: FailureCategory,
+    expected_stages: &[EntryStage],
+    expected_character: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let failure = snapshot
         .latest_failure
         .as_ref()
         .ok_or_else(|| io::Error::other("negative probe unexpectedly produced no failure"))?;
-    if failure.category() != expected || !matches!(snapshot.phase, ClientPhase::Failed(_)) {
+    let rejected = events
+        .iter()
+        .filter(|event| matches!(event.kind, ClientEventKind::CommandRejected { .. }))
+        .count();
+    let diagnostic_matches = snapshot
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.message() == failure.context());
+    let character_matches = expected_character.is_none_or(|expected_character| {
+        snapshot.identity.character_name() == expected_character
+            && failure.context().contains("configured character")
+    });
+    if failure.category() != expected
+        || !matches!(snapshot.phase, ClientPhase::Failed(_))
+        || entering_stages(events) != expected_stages
+        || rejected != 1
+        || !diagnostic_matches
+        || !character_matches
+        || events.iter().any(|event| {
+            matches!(
+                event.kind,
+                ClientEventKind::CharacterSelected { .. }
+                    | ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::Entering(EntryStage::Bootstrap),
+                    }
+            )
+        })
+        || !matches!(
+            events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        )
+    {
         return Err(io::Error::other(format!(
-            "negative probe category mismatch: expected {expected:?}, got {:?}",
+            "negative probe contract mismatch: expected {expected:?}, got {:?}",
             failure.category()
         ))
         .into());
     }
     println!(
-        "character selection negative probe: PASS category={:?} stage={} recovery={:?}",
+        "character selection negative probe: PASS category={:?} stage={} configured_character={} recovery={:?} retries=0 disconnected=true player_login_sent=false",
         failure.category(),
         failure.stage(),
+        expected_character.unwrap_or("not-applicable"),
         failure.recommended_recovery(),
     );
     Ok(())
 }
 
-fn has_expected_semantic_path(events: &[client_session::ClientEvent]) -> bool {
-    let expected = [
-        ClientPhase::Entering(EntryStage::LoginConnection),
-        ClientPhase::Entering(EntryStage::LoginAuthentication),
-        ClientPhase::Entering(EntryStage::RealmSelection),
-        ClientPhase::Entering(EntryStage::WorldAuthentication),
-        ClientPhase::Entering(EntryStage::CharacterSelection),
-    ];
-    let mut expected_index = 0;
-    for phase in events.iter().filter_map(|event| match &event.kind {
-        ClientEventKind::PhaseChanged { phase } => Some(phase),
-        _ => None,
-    }) {
-        if expected.get(expected_index) == Some(phase) {
-            expected_index += 1;
-        }
-    }
-    expected_index == expected.len()
+fn entering_stages(events: &[client_session::ClientEvent]) -> Vec<EntryStage> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ClientEventKind::PhaseChanged {
+                phase: ClientPhase::Entering(stage),
+            } => Some(*stage),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_success_events(events: &[client_session::ClientEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event.kind, ClientEventKind::RealmDiscovered { .. }))
         && events
             .iter()
-            .any(|event| matches!(event.kind, ClientEventKind::RealmDiscovered { .. }))
-        && events
-            .iter()
-            .any(|event| matches!(event.kind, ClientEventKind::CharacterSelected { .. }))
+            .filter(|event| matches!(event.kind, ClientEventKind::CharacterSelected { .. }))
+            .count()
+            == 1
         && matches!(
             events.last().map(|event| &event.kind),
             Some(ClientEventKind::Disconnected)

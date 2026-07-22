@@ -4,6 +4,7 @@ mod api;
 mod boundary;
 mod character;
 mod config;
+mod headless;
 mod machine;
 mod offline;
 mod realm;

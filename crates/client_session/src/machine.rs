@@ -1,7 +1,7 @@
 use crate::EntryStage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DiscoveryState {
+enum EntryState {
     AwaitingStart,
     Connecting,
     Authenticating,
@@ -16,90 +16,90 @@ enum DiscoveryState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InvalidTransition;
 
-/// Explicit ordered state for the login-only realm-discovery capability.
-pub(crate) struct RealmDiscoveryMachine {
-    state: DiscoveryState,
+/// Explicit ordered state for headless realm discovery or character selection.
+pub(crate) struct EntryMachine {
+    state: EntryState,
 }
 
-impl RealmDiscoveryMachine {
+impl EntryMachine {
     pub(crate) const fn new() -> Self {
         Self {
-            state: DiscoveryState::AwaitingStart,
+            state: EntryState::AwaitingStart,
         }
     }
 
     pub(crate) fn begin(&mut self) -> Result<EntryStage, InvalidTransition> {
         self.advance(
-            DiscoveryState::AwaitingStart,
-            DiscoveryState::Connecting,
+            EntryState::AwaitingStart,
+            EntryState::Connecting,
             EntryStage::LoginConnection,
         )
     }
 
     pub(crate) fn authenticating(&mut self) -> Result<EntryStage, InvalidTransition> {
         self.advance(
-            DiscoveryState::Connecting,
-            DiscoveryState::Authenticating,
+            EntryState::Connecting,
+            EntryState::Authenticating,
             EntryStage::LoginAuthentication,
         )
     }
 
     pub(crate) fn selecting_realm(&mut self) -> Result<EntryStage, InvalidTransition> {
         self.advance(
-            DiscoveryState::Authenticating,
-            DiscoveryState::SelectingRealm,
+            EntryState::Authenticating,
+            EntryState::SelectingRealm,
             EntryStage::RealmSelection,
         )
     }
 
     pub(crate) fn complete(&mut self) -> Result<(), InvalidTransition> {
-        if self.state != DiscoveryState::SelectingCharacter {
+        if self.state != EntryState::SelectingCharacter {
             return Err(InvalidTransition);
         }
-        self.state = DiscoveryState::Complete;
+        self.state = EntryState::Complete;
         Ok(())
     }
 
     pub(crate) fn realm_discovered(&mut self) -> Result<(), InvalidTransition> {
-        if self.state != DiscoveryState::SelectingRealm {
+        if self.state != EntryState::SelectingRealm {
             return Err(InvalidTransition);
         }
-        self.state = DiscoveryState::RealmSelected;
+        self.state = EntryState::RealmSelected;
         Ok(())
     }
 
     pub(crate) fn complete_after_realm(&mut self) -> Result<(), InvalidTransition> {
-        if self.state != DiscoveryState::RealmSelected {
+        if self.state != EntryState::RealmSelected {
             return Err(InvalidTransition);
         }
-        self.state = DiscoveryState::Complete;
+        self.state = EntryState::Complete;
         Ok(())
     }
 
     pub(crate) fn authenticating_world(&mut self) -> Result<EntryStage, InvalidTransition> {
         self.advance(
-            DiscoveryState::RealmSelected,
-            DiscoveryState::AuthenticatingWorld,
+            EntryState::RealmSelected,
+            EntryState::AuthenticatingWorld,
             EntryStage::WorldAuthentication,
         )
     }
 
     pub(crate) fn selecting_character(&mut self) -> Result<EntryStage, InvalidTransition> {
         self.advance(
-            DiscoveryState::AuthenticatingWorld,
-            DiscoveryState::SelectingCharacter,
+            EntryState::AuthenticatingWorld,
+            EntryState::SelectingCharacter,
             EntryStage::CharacterSelection,
         )
     }
 
     pub(crate) fn fail(&mut self) {
-        self.state = DiscoveryState::Failed;
+        self.state = EntryState::Failed;
     }
 
     fn advance(
         &mut self,
-        expected: DiscoveryState,
-        next: DiscoveryState,
+        expected: EntryState,
+        next: EntryState,
         stage: EntryStage,
     ) -> Result<EntryStage, InvalidTransition> {
         if self.state != expected {
@@ -114,11 +114,11 @@ impl RealmDiscoveryMachine {
 mod tests {
     use crate::EntryStage;
 
-    use super::RealmDiscoveryMachine;
+    use super::EntryMachine;
 
     #[test]
     fn state_machine_requires_challenge_proof_and_realm_order() {
-        let mut machine = RealmDiscoveryMachine::new();
+        let mut machine = EntryMachine::new();
         assert!(machine.selecting_realm().is_err());
         assert_eq!(machine.begin().unwrap(), EntryStage::LoginConnection);
         assert_eq!(

@@ -131,7 +131,7 @@ With the Reference Realm running, execute the serial live gate:
 scripts/live-character-selection.sh
 ```
 
-The gate holds the same repository-scoped realm lock and checks health before and after. It runs one successful production session plus two non-destructive negative probes:
+The gate holds the same repository-scoped realm lock, restores the label-scoped realm state while preserving the server-data cache, and checks layered health before and after. It runs the two non-destructive negative probes first, followed by one successful production session:
 
 - exact `Miaztest` selection must authenticate both sockets and end disconnected without player login;
 - a temporary nonexistent account must fail as `Authentication`; and
