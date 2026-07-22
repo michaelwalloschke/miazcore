@@ -102,6 +102,10 @@ fn run_worker_loop<F, C, E>(
                     Err(DiscoveryError::Failure(failure)) => {
                         boundary.fail(CommandKind::StartEntry, failure);
                     }
+                    Err(DiscoveryError::Cancelled) => {
+                        boundary.discard_pending_controls();
+                        boundary.disconnect();
+                    }
                     Err(DiscoveryError::Boundary) => {}
                 }
                 return;
@@ -126,6 +130,7 @@ where
     C: MonotonicClock,
     E: EntropySource,
 {
+    check_cancelled(boundary)?;
     let started = clock.now();
     let budget = config
         .connect_timeout()
@@ -142,6 +147,7 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
+    check_cancelled(boundary)?;
     let result = exchange(
         config,
         credentials,
@@ -202,6 +208,7 @@ where
     C: MonotonicClock,
     E: EntropySource,
 {
+    check_cancelled(boundary)?;
     check_deadline(clock, deadline)?;
     transition(
         boundary,
@@ -218,6 +225,7 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
+    check_cancelled(boundary)?;
     let challenge = match read_logon_challenge_response(transport).map_err(|error| {
         protocol_failure(
             error,
@@ -228,12 +236,14 @@ where
         LoginChallengeResponse::Accepted(challenge) => challenge,
         LoginChallengeResponse::Rejected { .. } => return Err(authentication_rejected()),
     };
+    check_cancelled(boundary)?;
     check_deadline(clock, deadline)?;
 
     let mut private_ephemeral = Zeroizing::new([0_u8; 32]);
     entropy
         .fill(private_ephemeral.as_mut())
         .map_err(|()| entropy_failure())?;
+    check_cancelled(boundary)?;
     let proof = calculate_srp_client_proof(
         credentials.account(),
         credentials.password(),
@@ -257,6 +267,7 @@ where
                 RecoveryAction::CheckReferenceRealm,
             )
         })?;
+    check_cancelled(boundary)?;
     let server_proof = match read_logon_proof_response(transport).map_err(|error| {
         protocol_failure(
             error,
@@ -267,6 +278,7 @@ where
         LoginProofResponse::Accepted { server_proof } => server_proof,
         LoginProofResponse::Rejected { .. } => return Err(authentication_rejected()),
     };
+    check_cancelled(boundary)?;
     if !proof.verify_server_proof(&server_proof) {
         return Err(DiscoveryError::Failure(ClientFailure::new(
             FailureCategory::Authentication,
@@ -291,6 +303,7 @@ where
     T: LoginTransport,
     C: MonotonicClock,
 {
+    check_cancelled(boundary)?;
     transition(
         boundary,
         machine.selecting_realm(),
@@ -303,6 +316,7 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
+    check_cancelled(boundary)?;
     let realms = read_realm_list_response(transport).map_err(|error| {
         protocol_failure(
             error,
@@ -310,6 +324,7 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
+    check_cancelled(boundary)?;
     check_deadline(clock, deadline)?;
     let realm = realms
         .into_iter()
@@ -361,7 +376,16 @@ fn check_deadline(
 
 enum DiscoveryError {
     Failure(ClientFailure),
+    Cancelled,
     Boundary,
+}
+
+fn check_cancelled(boundary: &WorkerBoundary) -> Result<(), DiscoveryError> {
+    if boundary.is_shutdown() {
+        Err(DiscoveryError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn authentication_rejected() -> DiscoveryError {
@@ -757,6 +781,50 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_during_authentication_stops_before_proof_and_closes_transport() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let client = Arc::new(client);
+        client.send_control(ControlCommand::StartEntry).unwrap();
+        let state = ScriptState::default();
+        let mut factory = ScriptFactory {
+            reads: Some(success_script()),
+            max_read: usize::MAX,
+            connect_error: None,
+            state: state.clone(),
+        };
+        let cancelling_client = Arc::clone(&client);
+        let worker = thread::spawn(move || {
+            run_worker_loop(
+                &config,
+                &credentials,
+                &mut boundary,
+                &mut factory,
+                &mut FixedClock::default(),
+                &mut CancellingEntropy {
+                    client: cancelling_client,
+                    value: PRIVATE_EPHEMERAL,
+                },
+            );
+            boundary.mark_stopped();
+        });
+        worker.join().unwrap();
+
+        assert_eq!(
+            *state.writes.lock().unwrap(),
+            fixture("login-challenge-request.hex")
+        );
+        assert!(state.closed.load(Ordering::Acquire));
+        assert_eq!(client.snapshot().phase, ClientPhase::Offline);
+        assert_eq!(client.snapshot().queue_counters.control_queued, 0);
+        assert!(matches!(
+            client.drain_events().last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
+    }
+
+    #[test]
     fn public_failure_and_evidence_formats_cannot_reveal_credentials_or_session_material() {
         let account = b"NEVERPRINTACCOUNT";
         let password = b"NEVERPRINTPASSWORD";
@@ -1008,6 +1076,19 @@ mod tests {
             if self.fails {
                 return Err(());
             }
+            destination.copy_from_slice(&self.value);
+            Ok(())
+        }
+    }
+
+    struct CancellingEntropy {
+        client: Arc<crate::boundary::SessionClient>,
+        value: [u8; 32],
+    }
+
+    impl EntropySource for CancellingEntropy {
+        fn fill(&mut self, destination: &mut [u8]) -> Result<(), ()> {
+            self.client.request_shutdown();
             destination.copy_from_slice(&self.value);
             Ok(())
         }

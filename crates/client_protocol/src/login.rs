@@ -4,6 +4,11 @@ use crate::TARGET_CLIENT_BUILD;
 
 const MAX_REALM_PAYLOAD: usize = u16::MAX as usize;
 const MAX_REALMS: usize = 128;
+const WRATH_SRP_GENERATOR: [u8; 1] = [7];
+const WRATH_SRP_PRIME: [u8; 32] = [
+    0xb7, 0x9b, 0x3e, 0x2a, 0x87, 0x82, 0x3c, 0xab, 0x8f, 0x5e, 0xbf, 0xbf, 0x8e, 0xb1, 0x01, 0x08,
+    0x53, 0x50, 0x06, 0x29, 0x8b, 0x5b, 0xad, 0xbd, 0x5b, 0x53, 0xe1, 0x89, 0x5e, 0x64, 0x4b, 0x89,
+];
 
 /// Stable failure surface for build-12340 login framing and SRP validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,16 +153,22 @@ pub fn read_logon_challenge_response(
 
     let server_public_key = read_array::<32>(reader)?;
     let generator_len = usize::from(read_array::<1>(reader)?[0]);
-    if !(1..=32).contains(&generator_len) {
+    if generator_len != WRATH_SRP_GENERATOR.len() {
         return Err(ProtocolError::InvalidSrpParameters);
     }
     let mut generator = vec![0_u8; generator_len];
     reader.read_exact(&mut generator)?;
+    if generator.as_slice() != WRATH_SRP_GENERATOR {
+        return Err(ProtocolError::InvalidSrpParameters);
+    }
     let prime_len = usize::from(read_array::<1>(reader)?[0]);
     if prime_len != 32 {
         return Err(ProtocolError::InvalidSrpParameters);
     }
     let prime = read_array::<32>(reader)?;
+    if prime != WRATH_SRP_PRIME {
+        return Err(ProtocolError::InvalidSrpParameters);
+    }
     let salt = read_array::<32>(reader)?;
     let _crc_salt = read_array::<16>(reader)?;
     let security_flags = read_array::<1>(reader)?[0];

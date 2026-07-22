@@ -141,6 +141,25 @@ fn fragmented_reads_are_consumed_and_malformed_frames_fail_closed() {
     ));
 }
 
+#[test]
+fn incompatible_srp_groups_fail_closed() {
+    let mut altered_generator = fixture("login-challenge-response.hex");
+    let generator_offset = 3 + 32 + 1;
+    altered_generator[generator_offset] = 5;
+    assert!(matches!(
+        read_logon_challenge_response(&mut Cursor::new(altered_generator)),
+        Err(ProtocolError::InvalidSrpParameters)
+    ));
+
+    let mut altered_prime = fixture("login-challenge-response.hex");
+    let prime_offset = generator_offset + 1 + 1;
+    altered_prime[prime_offset] ^= 1;
+    assert!(matches!(
+        read_logon_challenge_response(&mut Cursor::new(altered_prime)),
+        Err(ProtocolError::InvalidSrpParameters)
+    ));
+}
+
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v1")
 }

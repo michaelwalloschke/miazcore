@@ -156,6 +156,12 @@ impl WorkerBoundary {
         self.shutdown.load(Ordering::Acquire)
     }
 
+    pub(crate) fn discard_pending_controls(&self) {
+        while self.control.try_recv().is_ok() {
+            self.counters.control_queued.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
     pub(crate) fn transition(&mut self, phase: ClientPhase) -> bool {
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
@@ -199,7 +205,9 @@ impl WorkerBoundary {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.phase = ClientPhase::Failed(recovery);
             current.latest_failure = Some(failure.clone());
-            push_failure_diagnostic(&mut current, &failure);
+            push_diagnostic(&mut current, |sequence| {
+                SemanticDiagnostic::from_failure(sequence, &failure)
+            });
             self.counters
                 .snapshot_revision
                 .fetch_add(1, Ordering::AcqRel);
@@ -331,32 +339,18 @@ fn record_backpressure_failure(
         action: RecoveryAction::RestartClient,
     });
     current.latest_failure = Some(failure);
-    push_diagnostic(&mut current, context);
+    push_diagnostic(&mut current, |sequence| {
+        SemanticDiagnostic::new(sequence, context)
+    });
     counters.snapshot_revision.fetch_add(1, Ordering::AcqRel);
 }
 
-fn push_diagnostic(snapshot: &mut ClientSnapshot, context: &'static str) {
+fn push_diagnostic(snapshot: &mut ClientSnapshot, create: impl FnOnce(u64) -> SemanticDiagnostic) {
     let diagnostic_sequence = snapshot
         .diagnostics
         .last()
         .map_or(1, |diagnostic| diagnostic.sequence().saturating_add(1));
-    snapshot
-        .diagnostics
-        .push(SemanticDiagnostic::new(diagnostic_sequence, context));
-    if snapshot.diagnostics.len() > 8 {
-        snapshot.diagnostics.remove(0);
-    }
-}
-
-fn push_failure_diagnostic(snapshot: &mut ClientSnapshot, failure: &ClientFailure) {
-    let diagnostic_sequence = snapshot
-        .diagnostics
-        .last()
-        .map_or(1, |diagnostic| diagnostic.sequence().saturating_add(1));
-    snapshot.diagnostics.push(SemanticDiagnostic::from_failure(
-        diagnostic_sequence,
-        failure,
-    ));
+    snapshot.diagnostics.push(create(diagnostic_sequence));
     if snapshot.diagnostics.len() > 8 {
         snapshot.diagnostics.remove(0);
     }
