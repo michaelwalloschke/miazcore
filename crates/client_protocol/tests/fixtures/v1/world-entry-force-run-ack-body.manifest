@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_FORCE_RUN_SPEED_CHANGE_ACK-body/0x00E3
+semantics=selected packed GUID counter seven current AzerothCore MovementInfo and exact acknowledged speed 8.5
+byte_length=41
+sha256=4be6794a1d062286cdf15aa73f452dc0e768a1c991c3cd2d27f4697235122bfd
+provenance=manually encoded from the pinned AzerothCore force-speed acknowledgement reader
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-force-run-ack-body.hex

@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_COMPRESSED_UPDATE_OBJECT-body/0x01F6
+semantics=declared 90-byte self update followed by its independently zlib-compressed stream
+byte_length=79
+sha256=f3bc63bfd7f48931c89bf7ae33c80a24cb6951e65e4079e38834a28174c196f0
+provenance=compressed independently with Python zlib from the manually encoded self update fixture
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-self-update-compressed-body.hex

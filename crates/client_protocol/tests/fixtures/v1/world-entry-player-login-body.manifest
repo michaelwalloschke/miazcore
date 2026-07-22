@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_PLAYER_LOGIN-body/0x003D
+semantics=synthetic full little-endian selected character GUID 0x1234
+byte_length=8
+sha256=0e4bed14bd40c18d39ad985a37f0ead2375969a15ce581d0fc015d342ff5e804
+provenance=manually encoded from the pinned AzerothCore reader using Python integer primitives
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-player-login-body.hex

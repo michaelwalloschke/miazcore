@@ -6,6 +6,7 @@ mod character;
 mod config;
 mod headless;
 mod machine;
+mod movement_ready;
 mod offline;
 mod realm;
 mod runtime;
@@ -22,6 +23,7 @@ pub use config::{
     ClientConfig, ClientConfigSpec, ConfigError, CredentialFileKind, CredentialFileProblem,
     CredentialPaths, LoadedClientConfig,
 };
+pub use movement_ready::{MovementReadyEvidence, MovementReadySession};
 pub use offline::OfflineSession;
 pub use realm::{RealmDiscoveryEvidence, RealmDiscoverySession};
 

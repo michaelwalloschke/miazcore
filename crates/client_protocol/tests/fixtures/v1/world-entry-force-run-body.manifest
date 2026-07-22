@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_FORCE_RUN_SPEED_CHANGE-body/0x00E2
+semantics=selected packed GUID counter seven required zero marker and absolute run speed 8.5
+byte_length=12
+sha256=9b8fb55f21de92c147825c966e7bfeffe32e84e244ac5de25dbf47ba7090724d
+provenance=manually encoded from the pinned AzerothCore controller-speed writer
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-force-run-body.hex

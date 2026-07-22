@@ -137,7 +137,22 @@ The gate holds the same repository-scoped realm lock, restores the label-scoped 
 - a temporary nonexistent account must fail as `Authentication`; and
 - valid credentials plus `Miazmissing` must fail as `Configuration`.
 
-The worker decrypts only world headers; packet bodies remain plaintext according to the build-12340 protocol. It reads every unknown packet as a complete bounded frame before skipping it, so the directional ciphers remain aligned. `CMSG_PLAYER_LOGIN`, bootstrap packets, authoritative self state, and all movement remain explicitly deferred.
+The worker decrypts only world headers; packet bodies remain plaintext according to the build-12340 protocol. It reads every unknown packet as a complete bounded frame before skipping it, so the directional ciphers remain aligned. Character selection still stops before `CMSG_PLAYER_LOGIN` and sends no movement.
+
+## Quick start: Movement-ready world entry
+
+Run the next serial live gate against the reset-scoped Reference Realm:
+
+```sh
+scripts/live-movement-ready.sh
+```
+
+This production session selects `Miaztest`, sends `CMSG_PLAYER_LOGIN`, validates
+the login anchor against the selected character and authoritative self create,
+retains the realm-provided run speed, and completes time and no-flight
+acknowledgements. It must emit `MovementReady` exactly once, submit no movement,
+disconnect cleanly, and leave the realm healthy. Prediction, movement packets,
+Movement Proof, and the live Bevy connection remain deferred.
 
 ### Reference Realm prerequisites
 

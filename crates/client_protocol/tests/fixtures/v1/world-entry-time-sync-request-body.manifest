@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_TIME_SYNC_REQ-body/0x0390
+semantics=first world-entry time synchronization request counter eleven
+byte_length=4
+sha256=cb30e91817239109ffd0a5870046e128f04619da80c7624d921162fdfe514f76
+provenance=manually encoded from the pinned AzerothCore time synchronization writer
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-time-sync-request-body.hex

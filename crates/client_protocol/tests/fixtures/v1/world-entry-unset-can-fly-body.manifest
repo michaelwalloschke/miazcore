@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_MOVE_UNSET_CAN_FLY-body/0x0344
+semantics=selected packed GUID with movement-control counter nine
+byte_length=7
+sha256=4cb71e9a6adb8ab6ed213405b988525fbd9692ea513ca61e29f647f8ccf5a227
+provenance=manually encoded from the pinned AzerothCore no-flight writer
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-unset-can-fly-body.hex

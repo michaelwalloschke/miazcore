@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_TIME_SYNC_RESP-body/0x0391
+semantics=echoed counter eleven and synthetic monotonic client time 0x55667788
+byte_length=8
+sha256=0678ac82b822ec0c48a2e63ef0c24bc281a210d25aad5744251482ede3927d6e
+provenance=manually encoded from the pinned AzerothCore time synchronization reader
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-time-sync-response-body.hex

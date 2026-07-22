@@ -12,8 +12,8 @@ use std::{
 use crate::{
     CONTROL_CAPACITY, ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot,
     CommandKind, ControlCommand, DiscoveredRealm, EVENT_CAPACITY, FailureCategory, MovementIntent,
-    QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter,
-    SemanticDiagnostic,
+    PoseSource, QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter,
+    SemanticDiagnostic, WorldPose,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -196,6 +196,49 @@ impl WorkerBoundary {
                 .fetch_add(1, Ordering::AcqRel);
         }
         self.publish(ClientEventKind::CharacterSelected { character })
+    }
+
+    pub(crate) fn observe_entry_anchor(&mut self, pose: WorldPose) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.entry_anchor = Some(pose);
+            current.realm_observed_pose = Some(pose);
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish(ClientEventKind::PoseObserved {
+            source: PoseSource::EntryObservation,
+            pose,
+        })
+    }
+
+    pub(crate) fn movement_ready(&mut self, run_speed: f32) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.run_speed = Some(run_speed);
+            current.latest_failure = None;
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.transition(ClientPhase::MovementReady)
+    }
+
+    pub(crate) fn reset_for_retry(&mut self) {
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
+        current.phase = ClientPhase::Offline;
+        current.discovered_realm = None;
+        current.selected_character = None;
+        current.entry_anchor = None;
+        current.predicted_pose = None;
+        current.submitted_pose = None;
+        current.realm_observed_pose = None;
+        current.run_speed = None;
+        current.latest_failure = None;
+        self.counters
+            .snapshot_revision
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     pub(crate) fn reject(&mut self, command: CommandKind, failure: ClientFailure) -> bool {

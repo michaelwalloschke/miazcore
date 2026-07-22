@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 crypto-bigint.workspace = true
+flate2.workspace = true
 hmac.workspace = true
 sha1.workspace = true
 subtle.workspace = true

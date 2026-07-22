@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_UPDATE_OBJECT-body/0x00A9
+semantics=one selected-player CreateObject2 SELF-LIVING-STATIONARY block with AzerothCore MovementInfo nine speeds and opaque values
+byte_length=90
+sha256=a747e1689487eea72db6ae28ba607d8b8efbcc66ff2f78fa5e1184f431196c2b
+provenance=manually encoded from pinned AzerothCore Object and Unit writers using Python struct primitives
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-self-update-body.hex

@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_LOGIN_VERIFY_WORLD-body/0x0236
+semantics=synthetic map-zero entry anchor at 1.25,-2.5,3.75 with orientation 0.5
+byte_length=20
+sha256=654a424c165e74890642767eb5efee5a82669509ea986c4f08ee0af90e71fa07
+provenance=manually encoded from the pinned AzerothCore writer using Python struct primitives
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-login-verify-body.hex

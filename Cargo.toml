@@ -18,6 +18,7 @@ client_bevy = { path = "crates/client_bevy", version = "=0.1.0" }
 client_protocol = { path = "crates/client_protocol", version = "=0.1.0" }
 client_session = { path = "crates/client_session", version = "=0.1.0" }
 crypto-bigint = { version = "=0.6.1", default-features = false, features = ["zeroize"] }
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 getrandom = "=0.3.4"
 hmac = "=0.12.1"
 sha1 = "=0.10.6"

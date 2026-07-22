@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=client-to-world
+opcode=CMSG_MOVE_SET_CAN_FLY_ACK-body/0x0345
+semantics=selected full GUID counter nine current AzerothCore MovementInfo and applied-false Bool32
+byte_length=46
+sha256=48d77c90fac475d6a6be6893f3daeef5950b0db3e1814cc78567fe88d46dfe84
+provenance=manually encoded from the pinned AzerothCore no-flight acknowledgement reader
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-unset-can-fly-ack-body.hex

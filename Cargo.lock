@@ -1946,6 +1946,7 @@ name = "client_protocol"
 version = "0.1.0"
 dependencies = [
  "crypto-bigint",
+ "flate2",
  "hmac",
  "sha1",
  "sha2",

@@ -35,6 +35,7 @@ dependencies = {
 
 expected_protocol_dependencies = {
     "crypto-bigint",
+    "flate2",
     "hmac",
     "sha1",
     "sha2",
@@ -44,7 +45,7 @@ expected_protocol_dependencies = {
 if dependencies["client_protocol"] != expected_protocol_dependencies:
     fail(
         "client_protocol dependencies are "
-        f"{sorted(dependencies['client_protocol'])}; expected approved crypto and fixture set"
+        f"{sorted(dependencies['client_protocol'])}; expected approved crypto and compression set"
     )
 if "client_protocol" not in dependencies["client_session"]:
     fail("client_session must depend on client_protocol")
@@ -74,6 +75,7 @@ if direct_bevy_users != {"client_bevy", "learning_client"}:
 
 required_exact_versions = {
     ("client_protocol", "crypto-bigint"): "=0.6.1",
+    ("client_protocol", "flate2"): "=1.1.9",
     ("client_protocol", "hmac"): "=0.12.1",
     ("client_protocol", "sha1"): "=0.10.6",
     ("client_protocol", "sha2"): "=0.10.9",
@@ -103,4 +105,6 @@ for (package_name, dependency_name), expected_requirement in required_exact_vers
             f"expected {expected_requirement}"
         )
 
-print("dependency boundary: four packages, one-way graph, approved crypto, and exact pins passed")
+print(
+    "dependency boundary: four packages, one-way graph, approved crypto/compression, and exact pins passed"
+)

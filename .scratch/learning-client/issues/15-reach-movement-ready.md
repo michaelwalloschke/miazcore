@@ -1,7 +1,7 @@
 # Reach MovementReady with Authoritative Self State
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Select Miaztest through an Authenticated World Session](14-select-fixture-character.md)
 
 ## Parent
@@ -16,8 +16,8 @@ Implement bounded zlib handling, compressed and uncompressed update containers, 
 
 ## Entry gate
 
-- [ ] Ticket 14 passes deterministically and against the live Reference Realm on the current branch.
-- [ ] The entry evidence and exact predecessor commit are recorded.
+- [x] Ticket 14 passes deterministically and against the live Reference Realm on the current branch.
+- [x] The entry evidence and exact predecessor commit are recorded.
 
 ## Acceptance criteria
 

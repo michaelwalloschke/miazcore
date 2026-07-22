@@ -9,6 +9,8 @@ enum EntryState {
     RealmSelected,
     AuthenticatingWorld,
     SelectingCharacter,
+    Bootstrapping,
+    Synchronizing,
     Complete,
     Failed,
 }
@@ -54,6 +56,30 @@ impl EntryMachine {
 
     pub(crate) fn complete(&mut self) -> Result<(), InvalidTransition> {
         if self.state != EntryState::SelectingCharacter {
+            return Err(InvalidTransition);
+        }
+        self.state = EntryState::Complete;
+        Ok(())
+    }
+
+    pub(crate) fn bootstrapping(&mut self) -> Result<EntryStage, InvalidTransition> {
+        self.advance(
+            EntryState::SelectingCharacter,
+            EntryState::Bootstrapping,
+            EntryStage::Bootstrap,
+        )
+    }
+
+    pub(crate) fn synchronizing(&mut self) -> Result<EntryStage, InvalidTransition> {
+        self.advance(
+            EntryState::Bootstrapping,
+            EntryState::Synchronizing,
+            EntryStage::ControlSynchronization,
+        )
+    }
+
+    pub(crate) fn movement_ready(&mut self) -> Result<(), InvalidTransition> {
+        if self.state != EntryState::Synchronizing {
             return Err(InvalidTransition);
         }
         self.state = EntryState::Complete;
@@ -138,7 +164,24 @@ mod tests {
             machine.selecting_character().unwrap(),
             EntryStage::CharacterSelection
         );
-        machine.complete().unwrap();
+        assert_eq!(machine.bootstrapping().unwrap(), EntryStage::Bootstrap);
+        assert_eq!(
+            machine.synchronizing().unwrap(),
+            EntryStage::ControlSynchronization
+        );
+        machine.movement_ready().unwrap();
         assert!(machine.authenticating().is_err());
+    }
+
+    #[test]
+    fn character_selection_may_end_at_its_own_capability_boundary() {
+        let mut machine = EntryMachine::new();
+        machine.begin().unwrap();
+        machine.authenticating().unwrap();
+        machine.selecting_realm().unwrap();
+        machine.realm_discovered().unwrap();
+        machine.authenticating_world().unwrap();
+        machine.selecting_character().unwrap();
+        machine.complete().unwrap();
     }
 }
