@@ -1,7 +1,7 @@
 # Reach MovementReady with Authoritative Self State
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Select Miaztest through an Authenticated World Session](14-select-fixture-character.md)
 
 ## Parent
@@ -21,20 +21,20 @@ Implement bounded zlib handling, compressed and uncompressed update containers, 
 
 ## Acceptance criteria
 
-- [ ] The session sends `CMSG_PLAYER_LOGIN` for the exactly selected character and safely consumes the required initialization sequence.
-- [ ] `SMSG_LOGIN_VERIFY_WORLD` establishes the candidate entry map and pose.
-- [ ] Bounded decompression rejects malformed, oversized, or incomplete compressed updates without unsafe allocation or stream drift.
-- [ ] Update-container decoding locates exactly one matching player `CreateObject2` carrying `SELF | LIVING`, structurally consumes required blocks, and skips opaque update values without building a broad update-field model.
-- [ ] The selected and self GUIDs match, and entry/self map and pose data agree under the accepted validation rules.
-- [ ] Project-owned `AcoreMovementInfo` uses AzerothCore's field widths and jump-data ordering for self updates and required acknowledgements.
-- [ ] All nine bootstrap speeds are consumed, a positive realm-provided run speed becomes current, and later run-speed changes receive the required acknowledgement.
-- [ ] Initial time synchronization and the no-flight acknowledgement complete before input or movement can become enabled.
-- [ ] `StartEntry` reaches the public `MovementReady` invariant with sanitized semantic stages, input gating, clean failure/shutdown, and explicit retry from fresh sockets, ciphers, time, and entropy.
-- [ ] Sanitized authoritative self-update fixtures are captured and independently validated.
-- [ ] Deterministic scenarios cover every malformed self-state and synchronization boundary, timeout, EOF, rejection, unsupported movement/control state, shutdown, and fresh retry.
-- [ ] A headless live production session reaches `MovementReady`, proves the invariant, emits no premature movement, and disconnects cleanly.
-- [ ] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
-- [ ] The exit evidence, remaining deferrals, and exact passing commit are recorded.
+- [x] The session sends `CMSG_PLAYER_LOGIN` for the exactly selected character and safely consumes the required initialization sequence.
+- [x] `SMSG_LOGIN_VERIFY_WORLD` establishes the candidate entry map and pose.
+- [x] Bounded decompression rejects malformed, oversized, or incomplete compressed updates without unsafe allocation or stream drift.
+- [x] Update-container decoding locates exactly one matching player `CreateObject2` carrying `SELF | LIVING`, structurally consumes required blocks, and skips opaque update values without building a broad update-field model.
+- [x] The selected and self GUIDs match, and entry/self map and pose data agree under the accepted validation rules.
+- [x] Project-owned `AcoreMovementInfo` uses AzerothCore's field widths and jump-data ordering for self updates and required acknowledgements.
+- [x] All nine bootstrap speeds are consumed, a positive realm-provided run speed becomes current, and later run-speed changes receive the required acknowledgement.
+- [x] Initial time synchronization and the no-flight acknowledgement complete before input or movement can become enabled.
+- [x] `StartEntry` reaches the public `MovementReady` invariant with sanitized semantic stages, input gating, clean failure/shutdown, and explicit retry from fresh sockets, ciphers, time, and entropy.
+- [x] Sanitized authoritative self-update fixtures are captured and independently validated.
+- [x] Deterministic scenarios cover every malformed self-state and synchronization boundary, timeout, EOF, rejection, unsupported movement/control state, shutdown, and fresh retry.
+- [x] A headless live production session reaches `MovementReady`, proves the invariant, emits no premature movement, and disconnects cleanly.
+- [x] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
+- [x] The exit evidence, remaining deferrals, and exact passing commit are recorded.
 
 ## Explicit deferrals
 
@@ -52,3 +52,18 @@ Implement bounded zlib handling, compressed and uncompressed update containers, 
 - Keep the Windows compile tripwire green without claiming Windows runtime acceptance.
 - Keep upstream incompatibilities inside `client_protocol`; do not expose generated types or fork dependencies.
 - Work and verify this ticket on one candidate, then run `/code-review` and commit before advancing the frontier.
+
+## Answer
+
+Implemented the engine-independent production path from exact `Miaztest`
+selection through player login, selective authoritative self decoding, entry
+corroboration, and required control synchronization to the public
+`MovementReady` invariant. The path is bounded and fail-closed, keeps movement
+gated, and retries only from fresh transport and protocol state.
+
+Independent fixtures, deterministic fault coverage, routine native/Windows
+checks, Metal rendering smoke, two-axis review, and a reset-scoped live Reference
+Realm session all pass on exact candidate
+`e73bc03ee26024689829f816a1350710c9d12eb7`. Full evidence and remaining
+deferrals are recorded in
+[Slice 15 exit-gate evidence](../research/slice-15-exit-gate.md).
