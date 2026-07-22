@@ -1,7 +1,7 @@
 # Discover the Reference Realm through Authenticated Login
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Render the Offline Diagnostic World from the Production Scaffold](12-render-offline-diagnostic-world.md)
 
 ## Parent
@@ -22,18 +22,18 @@ Implement the fixture-manifest format and synthetic SRP/header-crypto vectors, l
 
 ## Acceptance criteria
 
-- [ ] Independent synthetic vectors and golden transcripts prove the SRP6 and login-frame byte boundaries.
-- [ ] The login state machine handles challenge, proof, rejection, and realm-list decoding through production protocol and session code.
-- [ ] The dedicated session worker owns blocking transport and ordered protocol state while tests substitute private transport, clock, and entropy ports.
-- [ ] Accepted semantic stages reach the final command/event/snapshot boundary without exposing protocol-library types.
-- [ ] Deterministic scenarios cover success, authentication rejection, timeout, fragmented reads, malformed frames, orderly shutdown, and secrecy.
-- [ ] A headless live integration authenticates the fixture account, selects realm ID `1` named `Miazcore Reference Realm`, verifies build `12340` and its advertised world endpoint, and disconnects.
-- [ ] Independent golden tests and the real login/realm path pass through the production codecs and runtime.
-- [ ] Formatting every emitted command, event, snapshot, failure, and diagnostic proves credentials and session material cannot leak.
-- [ ] Worker shutdown is reliable after success and every covered failure.
-- [ ] The offline production application remains green and exposes no partially implemented connection action.
-- [ ] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
-- [ ] The exit evidence, remaining deferrals, and exact passing commit are recorded.
+- [x] Independent synthetic vectors and golden transcripts prove the SRP6 and login-frame byte boundaries.
+- [x] The login state machine handles challenge, proof, rejection, and realm-list decoding through production protocol and session code.
+- [x] The dedicated session worker owns blocking transport and ordered protocol state while tests substitute private transport, clock, and entropy ports.
+- [x] Accepted semantic stages reach the final command/event/snapshot boundary without exposing protocol-library types.
+- [x] Deterministic scenarios cover success, authentication rejection, timeout, fragmented reads, malformed frames, orderly shutdown, and secrecy.
+- [x] A headless live integration authenticates the fixture account, selects realm ID `1` named `Miazcore Reference Realm`, verifies build `12340` and its advertised world endpoint, and disconnects.
+- [x] Independent golden tests and the real login/realm path pass through the production codecs and runtime.
+- [x] Formatting every emitted command, event, snapshot, failure, and diagnostic proves credentials and session material cannot leak.
+- [x] Worker shutdown is reliable after success and every covered failure.
+- [x] The offline production application remains green and exposes no partially implemented connection action.
+- [x] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
+- [x] The exit evidence, remaining deferrals, and exact passing commit are recorded.
 
 ## Explicit deferrals
 
@@ -50,3 +50,20 @@ Implement the fixture-manifest format and synthetic SRP/header-crypto vectors, l
 - Keep the Windows compile tripwire green without claiming Windows runtime acceptance.
 - Keep upstream incompatibilities inside `client_protocol`; do not expose generated types or fork dependencies.
 - Work and verify this ticket on one candidate, then run `/code-review` and commit before advancing the frontier.
+
+## Answer
+
+Implemented one-attempt authenticated Reference Realm discovery through production,
+engine-independent protocol and session code. The worker performs the build-12340
+login challenge and SRP6 proof exchange, verifies the server proof, decodes the
+realm list, selects and verifies realm `1` / `Miazcore Reference Realm` /
+`127.0.0.1:8085`, publishes only redacted semantic stages through the final bounded
+application boundary, then closes and stops without opening the world socket.
+
+Exact passing candidate: `033585880c3eb65ef2f61b372a2ee9112429e672`.
+
+The visible Bevy application remains explicitly offline. World authentication,
+character selection, player login, Bevy-driven connection, and movement remain
+deferred. See [the entry-gate record](../research/slice-13-entry-gate.md) and
+[the exit-gate record](../research/slice-13-exit-gate.md) for commands, hashes,
+review findings, secret checks, and retained deferrals.
