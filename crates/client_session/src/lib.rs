@@ -23,7 +23,7 @@ pub use config::{
     ClientConfig, ClientConfigSpec, ConfigError, CredentialFileKind, CredentialFileProblem,
     CredentialPaths, LoadedClientConfig,
 };
-pub use movement_ready::{MovementReadyEvidence, MovementReadySession};
+pub use movement_ready::{LiveDiagnosticSession, MovementReadyEvidence, MovementReadySession};
 pub use offline::OfflineSession;
 pub use realm::{RealmDiscoveryEvidence, RealmDiscoverySession};
 

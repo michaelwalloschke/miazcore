@@ -12,14 +12,25 @@ const PARKED_MARKER_HEIGHT: f32 = -1_000.0;
 pub struct OfflinePresentation {
     pub rendered_planar: Vec2,
     pub heading: f32,
+    pub(crate) entry_anchor: Option<client_session::WorldPose>,
+    pub(crate) rendered_pose: Option<client_session::WorldPose>,
 }
 
 pub(crate) fn offline_planar_to_scene(planar: Vec2, height: f32) -> Vec3 {
     Vec3::new(planar.x, height, -planar.y)
 }
 
-fn world_pose_to_scene(pose: client_session::WorldPose, height: f32) -> Vec3 {
-    offline_planar_to_scene(Vec2::new(pose.east, pose.north), height)
+fn world_pose_to_scene(
+    anchor: client_session::WorldPose,
+    pose: client_session::WorldPose,
+    height: f32,
+) -> Option<Vec3> {
+    (anchor.map_id == pose.map_id).then(|| {
+        offline_planar_to_scene(
+            Vec2::new(pose.east - anchor.east, pose.north - anchor.north),
+            height,
+        )
+    })
 }
 
 fn parked_marker_translation() -> Vec3 {
@@ -30,6 +41,22 @@ impl OfflinePresentation {
     pub fn set_proof_pose(&mut self) {
         self.rendered_planar = Vec2::new(2.4, -1.6);
         self.heading = 2.16;
+        self.entry_anchor = None;
+        self.rendered_pose = None;
+    }
+
+    pub(crate) fn rendered_pose(&self) -> Option<client_session::WorldPose> {
+        self.rendered_pose
+    }
+
+    fn project_authoritative_entry(&mut self, snapshot: &client_session::ClientSnapshot) {
+        let Some(anchor) = snapshot.entry_anchor else {
+            return;
+        };
+        self.entry_anchor = Some(anchor);
+        self.rendered_pose = Some(anchor);
+        self.rendered_planar = Vec2::ZERO;
+        self.heading = anchor.orientation;
     }
 }
 
@@ -41,6 +68,9 @@ struct SubmittedMarker;
 
 #[derive(Component)]
 struct RealmObservedMarker;
+
+#[derive(Component)]
+struct EntryAnchorMarker;
 
 pub(crate) struct DiagnosticWorldPlugin;
 
@@ -56,7 +86,9 @@ impl Plugin for DiagnosticWorldPlugin {
             .add_systems(Startup, setup_diagnostic_world)
             .add_systems(
                 Update,
-                project_pose_markers.in_set(ClientScheduleSet::Presentation),
+                (project_authoritative_entry, project_pose_markers)
+                    .chain()
+                    .in_set(ClientScheduleSet::Presentation),
             );
     }
 }
@@ -109,10 +141,11 @@ fn setup_diagnostic_world(
     let cross_mesh = meshes.add(Cuboid::default());
     for scale in [Vec3::new(1.35, 0.06, 0.08), Vec3::new(0.08, 0.06, 1.35)] {
         commands.spawn((
-            Name::new("Offline display origin"),
+            Name::new("Entry Anchor marker"),
+            EntryAnchorMarker,
             Mesh3d(cross_mesh.clone()),
             MeshMaterial3d(anchor_material.clone()),
-            Transform::from_xyz(0.0, 0.055, 0.0).with_scale(scale),
+            Transform::from_translation(parked_marker_translation()).with_scale(scale),
         ));
     }
 
@@ -183,6 +216,15 @@ fn setup_diagnostic_world(
     spawn_camera(&mut commands);
 }
 
+fn project_authoritative_entry(
+    view: Res<DiagnosticView>,
+    mut presentation: ResMut<OfflinePresentation>,
+) {
+    if view.is_live_entry() {
+        presentation.project_authoritative_entry(view.snapshot());
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn project_pose_markers(
     presentation: Res<OfflinePresentation>,
@@ -193,6 +235,7 @@ fn project_pose_markers(
             With<RenderedAvatar>,
             Without<SubmittedMarker>,
             Without<RealmObservedMarker>,
+            Without<EntryAnchorMarker>,
         ),
     >,
     mut submitted: Single<
@@ -201,6 +244,7 @@ fn project_pose_markers(
             With<SubmittedMarker>,
             Without<RenderedAvatar>,
             Without<RealmObservedMarker>,
+            Without<EntryAnchorMarker>,
         ),
     >,
     mut observed: Single<
@@ -209,21 +253,64 @@ fn project_pose_markers(
             With<RealmObservedMarker>,
             Without<RenderedAvatar>,
             Without<SubmittedMarker>,
+            Without<EntryAnchorMarker>,
         ),
     >,
+    mut entry_anchor: Query<&mut Transform, With<EntryAnchorMarker>>,
 ) {
     avatar.translation = offline_planar_to_scene(presentation.rendered_planar, 0.74);
     avatar.rotation = Quat::from_rotation_y(presentation.heading);
 
-    if let Some(submitted_pose) = view.snapshot().submitted_pose {
-        submitted.translation = world_pose_to_scene(submitted_pose, 0.08);
+    let anchor = presentation.entry_anchor;
+    if let (Some(anchor), Some(submitted_pose)) = (anchor, view.snapshot().submitted_pose) {
+        submitted.translation = world_pose_to_scene(anchor, submitted_pose, 0.08)
+            .unwrap_or_else(parked_marker_translation);
     } else {
         submitted.translation = parked_marker_translation();
     }
 
-    if let Some(observed_pose) = view.snapshot().realm_observed_pose {
-        observed.translation = world_pose_to_scene(observed_pose, 0.34);
+    if let (Some(anchor), Some(observed_pose)) = (anchor, view.snapshot().realm_observed_pose) {
+        observed.translation = world_pose_to_scene(anchor, observed_pose, 0.34)
+            .unwrap_or_else(parked_marker_translation);
     } else {
         observed.translation = parked_marker_translation();
+    }
+
+    let translation = if anchor.is_some() {
+        Vec3::new(0.0, 0.055, 0.0)
+    } else {
+        parked_marker_translation()
+    };
+    for mut marker in &mut entry_anchor {
+        marker.translation = translation;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::prelude::Vec3;
+    use client_session::WorldPose;
+
+    use super::world_pose_to_scene;
+
+    #[test]
+    fn entry_anchor_is_the_local_diagnostic_world_origin() {
+        let anchor = WorldPose {
+            map_id: 0,
+            east: -8949.95,
+            north: -132.493,
+            elevation: 83.5312,
+            orientation: 0.0,
+        };
+        assert_eq!(
+            world_pose_to_scene(anchor, anchor, 0.34),
+            Some(Vec3::new(0.0, 0.34, 0.0))
+        );
+
+        let other_map = WorldPose {
+            map_id: 1,
+            ..anchor
+        };
+        assert_eq!(world_pose_to_scene(anchor, other_map, 0.34), None);
     }
 }

@@ -1,7 +1,7 @@
 # Enter the Live Diagnostic World through Bevy
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Reach MovementReady with Authoritative Self State](15-reach-movement-ready.md)
 
 ## Parent

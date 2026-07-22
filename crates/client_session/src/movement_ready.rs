@@ -78,3 +78,53 @@ impl MovementReadySession {
         self.0.shutdown()
     }
 }
+
+/// Engine-independent session retained at `MovementReady` for Bevy projection.
+///
+/// The worker still performs exactly the same complete `StartEntry` operation as
+/// [`MovementReadySession`], but it keeps the sanitized `MovementReady` state
+/// visible until the application explicitly disconnects. Movement publication is
+/// intentionally unavailable in this capability.
+pub struct LiveDiagnosticSession(HeadlessSession);
+
+impl LiveDiagnosticSession {
+    /// Start a dedicated worker that holds the completed entry invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initial boundary publication or worker creation fails.
+    pub fn start(loaded: LoadedClientConfig) -> Result<Self, BoundaryError> {
+        HeadlessSession::start(loaded, WorkerTarget::LiveDiagnostic).map(Self)
+    }
+
+    /// Send a lossless semantic control command to the worker.
+    ///
+    /// The live Diagnostic World accepts `StartEntry` and `Disconnect`; movement
+    /// controls remain unavailable until a later capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the control queue is full or the worker has stopped.
+    pub fn send_control(&self, command: ControlCommand) -> Result<(), BoundaryError> {
+        self.0.send_control(command)
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ClientSnapshot {
+        self.0.snapshot()
+    }
+
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<ClientEvent> {
+        self.0.drain_events()
+    }
+
+    /// Request a clean disconnect and join the worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the worker panicked.
+    pub fn shutdown(self) -> Result<(), BoundaryError> {
+        self.0.shutdown()
+    }
+}

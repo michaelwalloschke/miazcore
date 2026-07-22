@@ -2,15 +2,18 @@ use std::{
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use bevy::prelude::{App, MinimalPlugins};
 use client_bevy::{
-    ClientScheduleSet, DiagnosticView, LearningClientPlugin, SessionBridge, SystemOrderTrace,
+    ClientScheduleSet, DiagnosticSession, DiagnosticView, LearningClientPlugin, SessionBridge,
+    SystemOrderTrace,
 };
 use client_session::{
-    ClientConfig, ClientConfigSpec, ClientPhase, CredentialPaths, OfflineSession,
+    BoundaryError, ClientConfig, ClientConfigSpec, ClientEvent, ClientEventKind, ClientPhase,
+    ControlCommand, CredentialPaths, OfflineSession, SanitizedIdentity, WorldPose,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +63,58 @@ fn offline_projection_has_no_network_pose_or_speed_claims() {
     assert!(snapshot.submitted_pose.is_none());
     assert!(snapshot.realm_observed_pose.is_none());
     assert!(snapshot.run_speed.is_none());
+}
+
+#[test]
+fn minimal_plugins_projects_live_entry_truth_and_only_starts_the_complete_operation() {
+    let identity =
+        SanitizedIdentity::new(1, "Miazcore Reference Realm", "Miaztest", 12_340).unwrap();
+    let anchor = WorldPose {
+        map_id: 0,
+        east: -8949.95,
+        north: -132.493,
+        elevation: 83.5312,
+        orientation: 0.0,
+    };
+    let mut snapshot = client_session::ClientSnapshot::offline(identity.clone());
+    snapshot.phase = ClientPhase::MovementReady;
+    snapshot.entry_anchor = Some(anchor);
+    snapshot.realm_observed_pose = Some(anchor);
+    snapshot.run_speed = Some(7.0);
+    let fake = FakeLiveSession::new(
+        snapshot,
+        vec![ClientEvent {
+            sequence: 3,
+            kind: ClientEventKind::PhaseChanged {
+                phase: ClientPhase::MovementReady,
+            },
+        }],
+    );
+    let controls = Arc::clone(&fake.controls);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(SessionBridge::new(fake))
+        .insert_resource(SystemOrderTrace::default())
+        .add_plugins(LearningClientPlugin::headless());
+
+    app.world()
+        .resource::<SessionBridge>()
+        .start_entry()
+        .unwrap();
+    app.update();
+
+    let view = app.world().resource::<DiagnosticView>();
+    assert!(view.is_live_entry());
+    assert_eq!(view.snapshot().phase, ClientPhase::MovementReady);
+    assert_eq!(view.snapshot().entry_anchor, Some(anchor));
+    assert_eq!(view.snapshot().realm_observed_pose, Some(anchor));
+    assert_eq!(view.snapshot().run_speed, Some(7.0));
+    assert_eq!(view.recent_events().count(), 1);
+    assert_eq!(
+        controls.lock().unwrap().as_slice(),
+        &[ControlCommand::StartEntry]
+    );
 }
 
 fn offline_session(credentials: &TestCredentials) -> OfflineSession {
@@ -118,5 +173,40 @@ fn write_secret(path: &std::path::Path, value: &[u8]) {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+struct FakeLiveSession {
+    snapshot: client_session::ClientSnapshot,
+    events: Mutex<Vec<ClientEvent>>,
+    controls: Arc<Mutex<Vec<ControlCommand>>>,
+}
+
+impl FakeLiveSession {
+    fn new(snapshot: client_session::ClientSnapshot, events: Vec<ClientEvent>) -> Self {
+        Self {
+            snapshot,
+            events: Mutex::new(events),
+            controls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl DiagnosticSession for FakeLiveSession {
+    fn snapshot(&self) -> client_session::ClientSnapshot {
+        self.snapshot.clone()
+    }
+
+    fn drain_events(&self) -> Vec<ClientEvent> {
+        std::mem::take(&mut *self.events.lock().unwrap())
+    }
+
+    fn send_control(&self, command: ControlCommand) -> Result<(), BoundaryError> {
+        self.controls.lock().unwrap().push(command);
+        Ok(())
+    }
+
+    fn is_live_entry(&self) -> bool {
+        true
     }
 }

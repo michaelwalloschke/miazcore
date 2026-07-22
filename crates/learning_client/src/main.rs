@@ -8,7 +8,7 @@ use std::{
 
 use bevy::{prelude::*, time::TimeUpdateStrategy, window::WindowPlugin};
 use client_bevy::{LearningClientPlugin, RenderProofPlugin, SessionBridge};
-use client_session::{ClientConfig, OfflineSession};
+use client_session::{ClientConfig, LiveDiagnosticSession, OfflineSession};
 
 fn main() {
     if let Err(error) = run() {
@@ -24,18 +24,22 @@ fn run() -> Result<(), StartupError> {
 
     // Configuration and credentials are fully validated before Bevy or a session is constructed.
     let loaded = ClientConfig::reference_realm(&repository_root)?.load()?;
-    let session = OfflineSession::start(loaded)?;
+    let session = if arguments.offline || arguments.proof_output.is_some() {
+        SessionBridge::new(OfflineSession::start(loaded)?)
+    } else {
+        SessionBridge::new(LiveDiagnosticSession::start(loaded)?)
+    };
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Miazcore — Offline Diagnostic World".into(),
+            title: "Miazcore — Diagnostic World".into(),
             resolution: (1280, 720).into(),
             ..default()
         }),
         ..default()
     }))
-    .insert_resource(SessionBridge::new(session))
+    .insert_resource(session)
     .add_plugins(LearningClientPlugin::windowed());
 
     if let Some(output) = arguments.proof_output {
@@ -43,6 +47,11 @@ fn run() -> Result<(), StartupError> {
             1.0 / 60.0,
         )))
         .add_plugins(RenderProofPlugin::new(output));
+    } else if let Some(output) = arguments.live_proof_output {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::live_entry(output));
     }
 
     app.run();
@@ -52,6 +61,8 @@ fn run() -> Result<(), StartupError> {
 #[derive(Debug, Default, Eq, PartialEq)]
 struct Arguments {
     proof_output: Option<PathBuf>,
+    live_proof_output: Option<PathBuf>,
+    offline: bool,
 }
 
 impl Arguments {
@@ -60,7 +71,7 @@ impl Arguments {
         let mut parsed = Self::default();
         while let Some(argument) = arguments.next() {
             if argument == "--proof-output" {
-                if parsed.proof_output.is_some() {
+                if parsed.proof_output.is_some() || parsed.live_proof_output.is_some() {
                     return Err(StartupError::DuplicateProofOutput);
                 }
                 parsed.proof_output = Some(
@@ -69,9 +80,27 @@ impl Arguments {
                         .map(PathBuf::from)
                         .ok_or(StartupError::MissingProofOutput)?,
                 );
+            } else if argument == "--live-proof-output" {
+                if parsed.proof_output.is_some() || parsed.live_proof_output.is_some() {
+                    return Err(StartupError::DuplicateProofOutput);
+                }
+                parsed.live_proof_output = Some(
+                    arguments
+                        .next()
+                        .map(PathBuf::from)
+                        .ok_or(StartupError::MissingProofOutput)?,
+                );
+            } else if argument == "--offline" {
+                if parsed.offline {
+                    return Err(StartupError::DuplicateOfflineMode);
+                }
+                parsed.offline = true;
             } else {
                 return Err(StartupError::UnsupportedArgument);
             }
+        }
+        if parsed.offline && parsed.live_proof_output.is_some() {
+            return Err(StartupError::OfflineLiveConflict);
         }
         Ok(parsed)
     }
@@ -82,6 +111,8 @@ enum StartupError {
     UnsupportedArgument,
     MissingProofOutput,
     DuplicateProofOutput,
+    DuplicateOfflineMode,
+    OfflineLiveConflict,
     WorkingDirectory,
     NotRepositoryRoot,
     Configuration(client_session::ConfigError),
@@ -96,14 +127,20 @@ impl fmt::Display for StartupError {
                 formatter.write_str("--proof-output requires a non-secret path")
             }
             Self::DuplicateProofOutput => {
-                formatter.write_str("--proof-output may be supplied only once")
+                formatter.write_str("only one render-proof output may be supplied")
+            }
+            Self::DuplicateOfflineMode => {
+                formatter.write_str("--offline may be supplied only once")
+            }
+            Self::OfflineLiveConflict => {
+                formatter.write_str("--offline cannot be combined with a live render proof")
             }
             Self::WorkingDirectory => formatter.write_str("working directory is unavailable"),
             Self::NotRepositoryRoot => {
                 formatter.write_str("run the Learning Client from the repository root")
             }
             Self::Configuration(error) => write!(formatter, "configuration: {error}"),
-            Self::Boundary(error) => write!(formatter, "offline session: {error}"),
+            Self::Boundary(error) => write!(formatter, "session: {error}"),
         }
     }
 }
@@ -146,8 +183,30 @@ mod tests {
             .unwrap(),
             Arguments {
                 proof_output: Some("artifacts/offline.png".into()),
+                live_proof_output: None,
+                offline: false,
             }
         );
+        assert_eq!(
+            Arguments::parse([
+                OsString::from("--live-proof-output"),
+                OsString::from("artifacts/live.png"),
+            ])
+            .unwrap(),
+            Arguments {
+                proof_output: None,
+                live_proof_output: Some("artifacts/live.png".into()),
+                offline: false,
+            }
+        );
+        assert!(matches!(
+            Arguments::parse([
+                OsString::from("--offline"),
+                OsString::from("--live-proof-output"),
+                OsString::from("artifacts/live.png"),
+            ]),
+            Err(StartupError::OfflineLiveConflict)
+        ));
         assert!(matches!(
             Arguments::parse([OsString::from("--password")]),
             Err(StartupError::UnsupportedArgument)

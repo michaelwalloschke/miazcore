@@ -4,7 +4,7 @@
 
 A private learning project for building a small, original game client that speaks to an AzerothCore Wrath of the Lich King 3.3.5a server.
 
-> **Current status:** the reproducible local AzerothCore Reference Realm and the first three production Learning Client slices are implemented. A headless production path now performs real SRP6 login, verified realm discovery, authenticated world-session negotiation, and exact `Miaztest` selection, then disconnects before player login. The visible Bevy application deliberately remains an explicitly offline Diagnostic World. World entry, networked movement, and Movement Proof remain later slices. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
+> **Current status:** the reproducible local AzerothCore Reference Realm and the first five production Learning Client slices are implemented. The Bevy Diagnostic World now drives the complete production entry command through authenticated world entry to `MovementReady`, projects real sanitized Entry Anchor/run-speed/session evidence, and exits cleanly without publishing movement. Networked movement and Movement Proof remain later slices. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
 
 ## What this project is
 
@@ -27,12 +27,12 @@ No Blizzard client installation, data files, terrain, models, audio, or interfac
 | --- | --- | --- |
 | Reference Realm | Implemented and proven | A repository-owned, six-service Docker Compose stack with pinned AzerothCore images, deterministic fixture provisioning, health checks, and a real protocol smoke test |
 | Protocol contract | Character-selection path implemented | Independent build-12340 login/world fixtures, SRP6, both authentication exchanges, realm and character decoding, and independently stateful encrypted header streams are production-tested |
-| Client architecture | Character-selection worker implemented | A four-package workspace enforces engine-free protocol/session layers; dedicated login-only and character-selection targets use private transport, clock, and entropy ports beneath the bounded semantic boundary |
-| Diagnostic experience | Implemented offline | The production viewport-first cockpit renders project-owned primitives, three-pose diagnostics, controls, and semantic events without networking |
+| Client architecture | Live Diagnostic World worker implemented | A four-package workspace enforces engine-free protocol/session layers; dedicated headless and live-diagnostic targets use private transport, clock, and entropy ports beneath the bounded semantic boundary |
+| Diagnostic experience | Live entry implemented | The production viewport-first cockpit renders project-owned primitives, real Entry Anchor/Realm-observed diagnostics, controls, and semantic events through `MovementReady` without publishing movement |
 | Engine/platform path | Implemented foundation | The production shell renders on Apple Silicon Metal, runs headless adapter tests, and compile-checks the Windows MSVC target |
-| Production Learning Client | Slice 3 complete | The offline Bevy client remains unchanged, while an engine-free headless harness authenticates, discovers the realm, opens a fresh world session, and selects exactly one configured character through production code |
+| Production Learning Client | Slice 5 complete | The Bevy client exposes one configured **Connect & Enter Reference Realm** action, then projects live sanitized session state and retains the Movement-ready Diagnostic World until clean application shutdown |
 
-The headless Learning Client can stop after authenticated realm discovery or continue through a fresh world connection. The extended target verifies the build-12340 world challenge, authenticates the encrypted session, consumes complete character records, selects exactly one configured `Miaztest`, and disconnects without sending `CMSG_PLAYER_LOGIN`. The Bevy application remains visibly `Offline`, exposes no connection action, and makes no world-entry or movement claim. Movement-ready world entry is the next implementation frontier.
+The headless Learning Client can stop after authenticated realm discovery or continue through a fresh world connection. The extended target verifies the build-12340 world challenge, authenticates the encrypted session, consumes complete character records, selects exactly one configured `Miaztest`, enters the world, and reaches `MovementReady`. The Bevy application exposes one complete entry action and projects only sanitized identity, phase, Entry Anchor, Realm-observed Pose, run speed, queue counters, and semantic events. It keeps movement publication disabled; prediction, movement packets, and Movement Proof remain later frontiers.
 
 ## Architecture
 
@@ -55,8 +55,8 @@ flowchart LR
 The responsibilities are intentionally strict:
 
 - `client_protocol` is the engine-free byte boundary. It owns the build-12340 login and world authentication codecs, realm and character decoders, SRP6 proof verification, complete world framing, and independent inbound/outbound encrypted-header state.
-- `client_session` owns immutable configuration, zeroizing credentials and session keys, semantic state, bounded queues, and session lifecycle. Its headless targets own blocking login/world transport and ordered state, with private transport, monotonic-clock, and entropy ports for deterministic tests. The visible application still uses a separate offline worker.
-- `client_bevy` owns only player input, presentation/interpolation, placeholder rendering, camera control, and redacted diagnostics. Engine-independent prediction remains a later `client_session` capability; slice 1 moves only an explicitly offline display placeholder.
+- `client_session` owns immutable configuration, zeroizing credentials and session keys, semantic state, bounded queues, and session lifecycle. Its headless and live-Diagnostic targets own blocking login/world transport and ordered state, with private transport, monotonic-clock, and entropy ports for deterministic tests.
+- `client_bevy` owns only user input, presentation/interpolation, placeholder rendering, camera control, and redacted diagnostics. It projects the `MovementReady` semantic boundary but cannot publish movement; engine-independent prediction remains a later `client_session` capability.
 - `learning_client` composes those layers without hiding protocol or retry behavior.
 
 Control messages use a lossless FIFO with capacity 16 plus a latest-value movement intent. Session output uses a lossless FIFO with capacity 64 plus a latest-value client snapshot. The Bevy side processes systems in the order **Ingress → Input → Presentation → Camera → Diagnostics**.
@@ -82,10 +82,10 @@ From the repository root, create or retain the ignored `0600` credential files:
 infra/azerothcore/realm init-secrets
 ```
 
-Launch the production Learning Client:
+Launch the explicitly offline Diagnostic World:
 
 ```sh
-cargo run --locked -p learning_client
+cargo run --locked -p learning_client -- --offline
 ```
 
 Use camera-relative `WASD` for display-only movement inside the five-metre offline display guide, right-mouse drag or the arrow keys to orbit, and the mouse wheel or `Q`/`E` to zoom. The client remains visibly `Offline`; its display placeholder moves while Submitted Pose and Realm-observed Pose remain unavailable and their markers stay hidden.
@@ -103,6 +103,28 @@ scripts/render-smoke.sh
 ```
 
 Generated render artifacts go under the ignored `artifacts/` directory by default.
+
+## Quick start: Live Diagnostic World entry
+
+Start the production Bevy application in its default live-entry mode:
+
+```sh
+cargo run --locked -p learning_client
+```
+
+Click **Connect & Enter Reference Realm** once. The application drives the one
+complete `StartEntry` operation, shows each sanitized session stage, then renders
+the project-owned placeholder at the real Entry Anchor after `MovementReady`.
+Realm-observed and Rendered Pose are deliberately labelled separately even while
+they coincide at entry; Submitted Pose remains unavailable and the viewport
+states that movement publication is disabled. Camera orbit, zoom, focus, and
+window controls remain available throughout entry.
+
+Run the reset-scoped Metal proof for this live path:
+
+```sh
+scripts/live-diagnostic-world.sh
+```
 
 ## Quick start: Authenticated realm discovery
 
@@ -152,7 +174,7 @@ the Entry Anchor against the selected character and authoritative self create,
 retains the realm-provided run speed, and completes time and no-flight
 acknowledgements. It must emit `MovementReady` exactly once, submit no movement,
 disconnect cleanly, and leave the realm healthy. Prediction, movement packets,
-Movement Proof, and the live Bevy connection remain deferred.
+and Movement Proof remain deferred; the live Bevy connection is covered above.
 
 ### Reference Realm prerequisites
 

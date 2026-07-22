@@ -59,11 +59,12 @@ pub(crate) enum WorkerTarget {
     RealmDiscovery,
     CharacterSelection,
     MovementReady,
+    LiveDiagnostic,
 }
 
 impl WorkerTarget {
     const fn supports_explicit_retry(self) -> bool {
-        matches!(self, Self::MovementReady)
+        matches!(self, Self::MovementReady | Self::LiveDiagnostic)
     }
 
     const fn expected_command(self, attempt_failed: bool) -> ControlCommand {
@@ -77,7 +78,7 @@ impl WorkerTarget {
     const fn connection_count(self) -> u32 {
         match self {
             Self::RealmDiscovery => 1,
-            Self::CharacterSelection | Self::MovementReady => 2,
+            Self::CharacterSelection | Self::MovementReady | Self::LiveDiagnostic => 2,
         }
     }
 
@@ -85,7 +86,7 @@ impl WorkerTarget {
         match self {
             Self::RealmDiscovery => 4,
             Self::CharacterSelection => 8,
-            Self::MovementReady => 64,
+            Self::MovementReady | Self::LiveDiagnostic => 64,
         }
     }
 
@@ -95,6 +96,10 @@ impl WorkerTarget {
 
     const fn stops_after_character(self) -> bool {
         matches!(self, Self::CharacterSelection)
+    }
+
+    const fn holds_movement_ready(self) -> bool {
+        matches!(self, Self::LiveDiagnostic)
     }
 }
 
@@ -167,6 +172,7 @@ fn run_worker_loop_for<F, C, E>(
     E: EntropySource,
 {
     let mut movement_attempt_failed = false;
+    let mut holding_movement_ready = false;
     loop {
         match boundary.receive_control(Duration::from_millis(20)) {
             Ok(command) => {
@@ -174,6 +180,18 @@ fn run_worker_loop_for<F, C, E>(
                 if command == ControlCommand::Disconnect || boundary.is_shutdown() {
                     boundary.disconnect();
                     return;
+                }
+                if holding_movement_ready {
+                    let failure = ClientFailure::new(
+                        FailureCategory::Configuration,
+                        "MovementReady",
+                        "movement publication is deferred in the live Diagnostic World",
+                        RecoveryAction::RestartClient,
+                    );
+                    if !boundary.reject(command.kind(), failure) {
+                        return;
+                    }
+                    continue;
                 }
                 let expected_command = target.expected_command(movement_attempt_failed);
                 if command != expected_command {
@@ -209,6 +227,7 @@ fn run_worker_loop_for<F, C, E>(
                     target,
                 ) {
                     Ok(outcome) => {
+                        let movement_ready = matches!(&outcome, EntryAttemptOutcome::MovementReady);
                         let published = match outcome {
                             EntryAttemptOutcome::CharacterSelected(character) => {
                                 boundary.selected(character)
@@ -216,6 +235,10 @@ fn run_worker_loop_for<F, C, E>(
                             EntryAttemptOutcome::RealmDiscovered
                             | EntryAttemptOutcome::MovementReady => true,
                         };
+                        if published && target.holds_movement_ready() && movement_ready {
+                            holding_movement_ready = true;
+                            continue;
+                        }
                         if published {
                             boundary.disconnect();
                         }
@@ -1645,6 +1668,67 @@ mod tests {
         let mut expected_flight = fixture("world-entry-unset-can-fly-ack-body.hex");
         expected_flight[18..22].fill(0);
         assert_eq!(frames[4].1, expected_flight);
+    }
+
+    #[test]
+    fn live_diagnostic_target_holds_movement_ready_until_explicit_disconnect() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let client = Arc::new(client);
+        client.send_control(ControlCommand::StartEntry).unwrap();
+        let worker = thread::spawn(move || {
+            let mut factory = RetryScriptFactory::new([movement_ready_success_script()]);
+            run_worker_loop_for(
+                &config,
+                &credentials,
+                &mut boundary,
+                &mut factory,
+                &mut FixedClock::default(),
+                &mut FixedEntropy::success(PRIVATE_EPHEMERAL),
+                WorkerTarget::LiveDiagnostic,
+            );
+            boundary.mark_stopped();
+        });
+
+        for _ in 0..100 {
+            if client.snapshot().phase == ClientPhase::MovementReady {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        let ready = client.snapshot();
+        assert_eq!(ready.phase, ClientPhase::MovementReady);
+        assert_eq!(ready.queue_counters.movement_revision, 0);
+        assert!(ready.entry_anchor.is_some());
+        assert!(ready.realm_observed_pose.is_some());
+        assert!(ready.submitted_pose.is_none());
+        client.send_control(ControlCommand::Disconnect).unwrap();
+        worker.join().unwrap();
+
+        let events = client.drain_events();
+        assert_eq!(client.snapshot().phase, ClientPhase::Offline);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::MovementReady
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, ClientEventKind::MovementSubmitted { .. }))
+        );
+        assert!(matches!(
+            events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
     }
 
     #[test]

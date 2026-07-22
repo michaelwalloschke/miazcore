@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use bevy::prelude::*;
-use client_session::{ClientEventKind, ClientPhase};
+use client_session::{ClientEventKind, ClientPhase, EntryStage};
 
 use crate::{ClientScheduleSet, DiagnosticView, world::OfflinePresentation};
 
@@ -19,19 +19,29 @@ enum DiagnosticText {
     Inspector,
     Events,
     Acceptance,
+    Connect,
 }
+
+#[derive(Component)]
+struct ConnectEntryAction;
 
 pub(crate) struct DiagnosticsPlugin;
 
 impl Plugin for DiagnosticsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_diagnostics).add_systems(
-            Update,
-            update_diagnostics.in_set(ClientScheduleSet::Diagnostics),
-        );
+        app.add_systems(Startup, setup_diagnostics)
+            .add_systems(
+                Update,
+                update_diagnostics.in_set(ClientScheduleSet::Diagnostics),
+            )
+            .add_systems(
+                Update,
+                dispatch_connect_entry.in_set(ClientScheduleSet::Input),
+            );
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn setup_diagnostics(mut commands: Commands) {
     spawn_text_panel(
         &mut commands,
@@ -113,6 +123,29 @@ fn setup_diagnostics(mut commands: Commands) {
             ..default()
         },
     );
+    commands.spawn((
+        Name::new("Connect & Enter Reference Realm action"),
+        DiagnosticText::Connect,
+        ConnectEntryAction,
+        Button,
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(13.0),
+            ..default()
+        },
+        TextColor(INK),
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(18),
+            bottom: px(18),
+            width: px(178),
+            height: px(62),
+            padding: UiRect::all(px(10)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.16, 0.38, 0.34, 0.88)),
+        ZIndex(11),
+    ));
 }
 
 fn spawn_text_panel(
@@ -147,7 +180,12 @@ fn update_diagnostics(
         match marker {
             DiagnosticText::Header => {
                 text.0 = format!(
-                    "OFFLINE  /  DIAGNOSTIC WORLD\n{}  /  REALM {}  /  BUILD {}  /  {}",
+                    "{}  /  DIAGNOSTIC WORLD\n{}  /  REALM {}  /  BUILD {}  /  {}",
+                    if view.is_live_entry() {
+                        "REFERENCE REALM"
+                    } else {
+                        "OFFLINE"
+                    },
                     snapshot.identity.realm_name(),
                     snapshot.identity.realm_id(),
                     snapshot.identity.client_build(),
@@ -156,21 +194,33 @@ fn update_diagnostics(
                 color.0 = INK;
             }
             DiagnosticText::Ladder => {
-                "SESSION LADDER\n\n>  OFFLINE\n-  LOGIN\n-  REALM SELECTION\n-  WORLD AUTH\n-  CHARACTER\n-  BOOTSTRAP\n-  MOVEMENT READY\n\nSLICE 12\nPresentation sandbox only.\nNetwork capability is absent."
-                    .clone_into(&mut text.0);
+                text.0 = format_session_ladder(snapshot.phase.clone(), view.is_live_entry());
                 color.0 = MUTED;
             }
             DiagnosticText::Inspector => {
                 let counters = snapshot.queue_counters;
+                let rendered = if view.is_live_entry() {
+                    format_pose("RENDERED POSE", presentation.rendered_pose())
+                } else {
+                    format!(
+                        "RENDERED / OFFLINE DISPLAY\nspace       {:>7.2}  {:>7.2}",
+                        presentation.rendered_planar.x, presentation.rendered_planar.y,
+                    )
+                };
+                let anchor = format_pose("ENTRY ANCHOR", snapshot.entry_anchor);
                 let submitted = format_pose("SUBMITTED POSE", snapshot.submitted_pose);
                 let observed = format_pose("REALM-OBSERVED POSE", snapshot.realm_observed_pose);
                 text.0 = format!(
-                    "IDENTITY & POSES\n\nRENDERED / OFFLINE DISPLAY\nspace       {:>7.2}  {:>7.2}\n\n{submitted}\n\n{observed}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\nNO SOCKETS / NO PACKETS",
-                    presentation.rendered_planar.x,
-                    presentation.rendered_planar.y,
+                    "IDENTITY & POSES\n\n{rendered}\n\n{anchor}\n\n{submitted}\n\n{observed}\n\nRUN SPEED\n{}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\n{}",
+                    format_run_speed(snapshot.run_speed),
                     counters.control_queued,
                     counters.event_queued,
                     counters.movement_revision,
+                    if view.is_live_entry() {
+                        "MOVEMENT PUBLICATION DISABLED"
+                    } else {
+                        "NO SOCKETS / NO PACKETS"
+                    },
                 );
                 color.0 = CYAN;
             }
@@ -179,13 +229,34 @@ fn update_diagnostics(
                 color.0 = MUTED;
             }
             DiagnosticText::Acceptance => {
-                let offline = snapshot.phase == ClientPhase::Offline;
-                text.0 = format!(
-                    "{}  OFFLINE GATE\n\nWASD  display-only movement\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nSubmitted and Realm-observed poses are unavailable. Their markers remain hidden. No network claim.",
-                    if offline { "PASS" } else { "WAIT" }
-                );
-                color.0 = if offline { LIME } else { AMBER };
+                let (value, accepted) = format_acceptance(snapshot, view.is_live_entry());
+                text.0 = value;
+                color.0 = if accepted { LIME } else { AMBER };
             }
+            DiagnosticText::Connect => {
+                text.0 = format_connect_action(snapshot.phase.clone(), view.is_live_entry());
+                color.0 = if view.is_live_entry() && matches!(snapshot.phase, ClientPhase::Offline)
+                {
+                    LIME
+                } else {
+                    MUTED
+                };
+            }
+        }
+    }
+}
+
+fn dispatch_connect_entry(
+    interactions: Query<&Interaction, (Changed<Interaction>, With<ConnectEntryAction>)>,
+    session: Res<crate::SessionBridge>,
+    view: Res<DiagnosticView>,
+) {
+    for interaction in &interactions {
+        if *interaction == Interaction::Pressed
+            && view.is_live_entry()
+            && view.snapshot().phase == ClientPhase::Offline
+        {
+            let _ = session.start_entry();
         }
     }
 }
@@ -198,6 +269,109 @@ fn format_pose(label: &str, pose: Option<client_session::WorldPose>) -> String {
         )
     } else {
         format!("{label}\nNOT AVAILABLE / NO REALM EVIDENCE")
+    }
+}
+
+fn format_run_speed(run_speed: Option<f32>) -> String {
+    run_speed.map_or_else(
+        || "NOT AVAILABLE / INPUT GATED".to_owned(),
+        |speed| format!("{speed:.3} m/s / realm-provided"),
+    )
+}
+
+fn format_session_ladder(phase: ClientPhase, live_entry: bool) -> String {
+    if !live_entry {
+        return "SESSION LADDER\n\n>  OFFLINE\n-  LOGIN\n-  REALM SELECTION\n-  WORLD AUTH\n-  CHARACTER\n-  BOOTSTRAP\n-  MOVEMENT READY\n\nOFFLINE PRESENTATION\nNetwork capability is absent."
+            .to_owned();
+    }
+    let active = match phase {
+        ClientPhase::Offline | ClientPhase::ProvingMovement(_) | ClientPhase::Failed(_) => 0,
+        ClientPhase::Entering(EntryStage::LoginConnection) => 1,
+        ClientPhase::Entering(EntryStage::LoginAuthentication) => 2,
+        ClientPhase::Entering(EntryStage::RealmSelection) => 3,
+        ClientPhase::Entering(EntryStage::WorldAuthentication) => 4,
+        ClientPhase::Entering(EntryStage::CharacterSelection) => 5,
+        ClientPhase::Entering(EntryStage::Bootstrap) => 6,
+        ClientPhase::Entering(EntryStage::ControlSynchronization) => 7,
+        ClientPhase::MovementReady => 8,
+    };
+    let stages = [
+        "OFFLINE",
+        "LOGIN CONNECT",
+        "LOGIN AUTH",
+        "REALM SELECTION",
+        "WORLD AUTH",
+        "CHARACTER",
+        "BOOTSTRAP",
+        "CONTROL SYNC",
+        "MOVEMENT READY",
+    ];
+    let mut output = String::from("SESSION LADDER\n\n");
+    for (index, stage) in stages.iter().enumerate() {
+        let marker = if matches!(phase, ClientPhase::Failed(_)) {
+            if index == 0 { "!" } else { "-" }
+        } else if index < active {
+            "+"
+        } else if index == active {
+            ">"
+        } else {
+            "-"
+        };
+        let _ = writeln!(output, "{marker}  {stage}");
+    }
+    output.push_str("\nOne configured entry operation.\nNo movement publication in this slice.");
+    output
+}
+
+fn format_connect_action(phase: ClientPhase, live_entry: bool) -> String {
+    if !live_entry {
+        return "OFFLINE MODE\nNo realm connection".to_owned();
+    }
+    match phase {
+        ClientPhase::Offline => "CONNECT & ENTER\nREFERENCE REALM".to_owned(),
+        ClientPhase::MovementReady => "MOVEMENT READY\nInput remains gated".to_owned(),
+        ClientPhase::Failed(_) => "ENTRY FAILED\nFollow recovery guidance".to_owned(),
+        ClientPhase::Entering(_) | ClientPhase::ProvingMovement(_) => {
+            "ENTERING REFERENCE REALM\nPlease wait".to_owned()
+        }
+    }
+}
+
+fn format_acceptance(
+    snapshot: &client_session::ClientSnapshot,
+    live_entry: bool,
+) -> (String, bool) {
+    if !live_entry {
+        let offline = snapshot.phase == ClientPhase::Offline;
+        return (
+            format!(
+                "{}  OFFLINE GATE\n\nWASD  display-only movement\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nSubmitted and Realm-observed poses are unavailable. Their markers remain hidden. No network claim.",
+                if offline { "PASS" } else { "WAIT" }
+            ),
+            offline,
+        );
+    }
+    match &snapshot.phase {
+        ClientPhase::MovementReady => (
+            "PASS  MOVEMENT-READY ENTRY\n\nEntry Anchor and Realm-observed Pose are live.\n\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nMovement intent and packets remain disabled.".to_owned(),
+            true,
+        ),
+        ClientPhase::Failed(recovery) => (
+            format!(
+                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nInput stays gated. No movement packet was sent.",
+                recovery.category,
+                recovery.action,
+                snapshot
+                    .latest_failure
+                    .as_ref()
+                    .map_or("No additional diagnostic", client_session::ClientFailure::context),
+            ),
+            false,
+        ),
+        _ => (
+            "WAITING FOR ENTRY\n\nConnect & Enter starts one complete configured operation.\n\nInput stays gated until the realm reaches MovementReady.".to_owned(),
+            false,
+        ),
     }
 }
 
@@ -254,6 +428,7 @@ mod tests {
                 kind: ClientEventKind::IdentityConfigured { identity },
             }]
             .into(),
+            live_entry: false,
         };
 
         let output = format_event_tail(&view).to_ascii_lowercase();

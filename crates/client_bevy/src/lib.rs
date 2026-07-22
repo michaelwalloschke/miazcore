@@ -11,7 +11,7 @@ mod world;
 
 use bevy::prelude::*;
 
-pub use bridge::{DiagnosticView, SessionBridge};
+pub use bridge::{DiagnosticSession, DiagnosticView, SessionBridge};
 pub use proof::RenderProofPlugin;
 pub use world::OfflinePresentation;
 
