@@ -1702,7 +1702,7 @@ mod tests {
         assert_eq!(ready.queue_counters.movement_revision, 0);
         assert!(ready.entry_anchor.is_some());
         assert!(ready.realm_observed_pose.is_some());
-        assert!(ready.submitted_pose.is_none());
+        assert_eq!(ready.submitted_pose, ready.entry_anchor);
         client.send_control(ControlCommand::Disconnect).unwrap();
         worker.join().unwrap();
 

@@ -7,7 +7,8 @@ use bevy::{
 };
 
 use crate::{
-    ClientScheduleSet, DiagnosticView, SessionBridge, camera::CameraRig, world::OfflinePresentation,
+    ClientScheduleSet, DiagnosticView, SessionBridge, camera::CameraRig,
+    world::DiagnosticPresentation,
 };
 
 // Leave enough presented frames for Metal pipeline creation on a cold shader cache.
@@ -75,7 +76,7 @@ struct RenderProofState {
 
 fn script_render_proof(
     mut proof: ResMut<RenderProofState>,
-    mut presentation: ResMut<OfflinePresentation>,
+    mut presentation: ResMut<DiagnosticPresentation>,
     mut camera: ResMut<CameraRig>,
     session: Res<SessionBridge>,
 ) {
@@ -113,7 +114,7 @@ fn script_render_proof(
 fn capture_render_proof(
     mut commands: Commands,
     mut proof: ResMut<RenderProofState>,
-    presentation: Res<OfflinePresentation>,
+    presentation: Res<DiagnosticPresentation>,
     view: Res<DiagnosticView>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -155,7 +156,7 @@ fn capture_render_proof(
     }
 }
 
-fn proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation) -> String {
+fn proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentation) -> String {
     if view.is_live_entry() {
         return live_proof_sidecar(view, presentation);
     }
@@ -183,7 +184,7 @@ fn proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation) -> S
     )
 }
 
-fn live_proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation) -> String {
+fn live_proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentation) -> String {
     let snapshot = view.snapshot();
     let anchor = snapshot
         .entry_anchor
@@ -194,6 +195,9 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation)
     let observed = snapshot
         .realm_observed_pose
         .expect("MovementReady retains the Realm-observed Entry Anchor");
+    let submitted = snapshot
+        .submitted_pose
+        .expect("MovementReady retains the initial Submitted Pose");
     format!(
         concat!(
             "{{\n",
@@ -207,7 +211,7 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation)
             "  \"movement_publication\": \"disabled\",\n",
             "  \"entry_anchor\": {},\n",
             "  \"rendered_pose\": {},\n",
-            "  \"submitted_pose\": null,\n",
+            "  \"submitted_pose\": {},\n",
             "  \"realm_observed_pose\": {}\n",
             "}}\n"
         ),
@@ -219,6 +223,7 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &OfflinePresentation)
             .expect("MovementReady has a positive run speed"),
         pose_json(anchor),
         pose_json(rendered),
+        pose_json(submitted),
         pose_json(observed),
     )
 }
@@ -258,7 +263,7 @@ mod tests {
 
     use client_session::{ClientPhase, ClientSnapshot, SanitizedIdentity, WorldPose};
 
-    use crate::{DiagnosticView, OfflinePresentation};
+    use crate::{DiagnosticMode, DiagnosticPresentation, DiagnosticView};
 
     use super::{json_string, proof_sidecar};
 
@@ -269,11 +274,11 @@ mod tests {
         let view = DiagnosticView {
             snapshot: ClientSnapshot::offline(identity),
             recent_events: VecDeque::default(),
-            live_entry: false,
+            mode: DiagnosticMode::Offline,
         };
         let sidecar = proof_sidecar(
             &view,
-            &OfflinePresentation {
+            &DiagnosticPresentation {
                 rendered_planar: bevy::prelude::Vec2::new(2.4, -1.6),
                 heading: 2.16,
                 entry_anchor: None,
@@ -308,16 +313,17 @@ mod tests {
         let mut snapshot = ClientSnapshot::offline(identity);
         snapshot.phase = ClientPhase::MovementReady;
         snapshot.entry_anchor = Some(anchor);
+        snapshot.submitted_pose = Some(anchor);
         snapshot.realm_observed_pose = Some(anchor);
         snapshot.run_speed = Some(7.0);
         let view = DiagnosticView {
             snapshot,
             recent_events: VecDeque::default(),
-            live_entry: true,
+            mode: DiagnosticMode::LiveEntry,
         };
         let sidecar = proof_sidecar(
             &view,
-            &OfflinePresentation {
+            &DiagnosticPresentation {
                 rendered_planar: bevy::prelude::Vec2::ZERO,
                 heading: 0.0,
                 entry_anchor: Some(anchor),
@@ -327,7 +333,7 @@ mod tests {
 
         assert!(sidecar.contains("\"phase\": \"MovementReady\""));
         assert!(sidecar.contains("\"movement_publication\": \"disabled\""));
-        assert!(sidecar.contains("\"submitted_pose\": null"));
+        assert!(sidecar.contains("\"submitted_pose\": { \"map_id\": 0"));
         assert!(sidecar.contains("\"entry_anchor\": { \"map_id\": 0"));
         assert!(!sidecar.to_ascii_lowercase().contains("password"));
         assert!(!sidecar.to_ascii_lowercase().contains("session_key"));

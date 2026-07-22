@@ -202,6 +202,10 @@ impl WorkerBoundary {
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.entry_anchor = Some(pose);
+            // The entry baseline is the initial submitted truth. It is not a
+            // movement publication and therefore deliberately emits no
+            // `MovementSubmitted` event or movement revision.
+            current.submitted_pose = Some(pose);
             current.realm_observed_pose = Some(pose);
             self.counters
                 .snapshot_revision

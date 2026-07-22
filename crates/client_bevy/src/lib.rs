@@ -11,9 +11,9 @@ mod world;
 
 use bevy::prelude::*;
 
-pub use bridge::{DiagnosticSession, DiagnosticView, SessionBridge};
+pub use bridge::{DiagnosticMode, DiagnosticSession, DiagnosticView, SessionBridge};
 pub use proof::RenderProofPlugin;
-pub use world::OfflinePresentation;
+pub use world::DiagnosticPresentation;
 
 use bridge::SessionBridgePlugin;
 use camera::ChaseCameraPlugin;

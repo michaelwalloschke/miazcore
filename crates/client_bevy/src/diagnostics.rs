@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use bevy::prelude::*;
 use client_session::{ClientEventKind, ClientPhase, EntryStage};
 
-use crate::{ClientScheduleSet, DiagnosticView, world::OfflinePresentation};
+use crate::{ClientScheduleSet, DiagnosticView, SessionBridge, world::DiagnosticPresentation};
 
 const INK: Color = Color::srgb(0.93, 0.96, 0.93);
 const MUTED: Color = Color::srgb(0.58, 0.65, 0.62);
@@ -25,11 +25,40 @@ enum DiagnosticText {
 #[derive(Component)]
 struct ConnectEntryAction;
 
+#[derive(Debug, Default, Resource)]
+struct ConnectActionFeedback(Option<&'static str>);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DisplayPhase {
+    Offline,
+    Entering(usize),
+    MovementReady,
+    Failed,
+    Proving,
+}
+
+fn display_phase(phase: &ClientPhase) -> DisplayPhase {
+    match phase {
+        ClientPhase::Offline => DisplayPhase::Offline,
+        ClientPhase::Entering(EntryStage::LoginConnection) => DisplayPhase::Entering(1),
+        ClientPhase::Entering(EntryStage::LoginAuthentication) => DisplayPhase::Entering(2),
+        ClientPhase::Entering(EntryStage::RealmSelection) => DisplayPhase::Entering(3),
+        ClientPhase::Entering(EntryStage::WorldAuthentication) => DisplayPhase::Entering(4),
+        ClientPhase::Entering(EntryStage::CharacterSelection) => DisplayPhase::Entering(5),
+        ClientPhase::Entering(EntryStage::Bootstrap) => DisplayPhase::Entering(6),
+        ClientPhase::Entering(EntryStage::ControlSynchronization) => DisplayPhase::Entering(7),
+        ClientPhase::MovementReady => DisplayPhase::MovementReady,
+        ClientPhase::Failed(_) => DisplayPhase::Failed,
+        ClientPhase::ProvingMovement(_) => DisplayPhase::Proving,
+    }
+}
+
 pub(crate) struct DiagnosticsPlugin;
 
 impl Plugin for DiagnosticsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_diagnostics)
+        app.init_resource::<ConnectActionFeedback>()
+            .add_systems(Startup, setup_diagnostics)
             .add_systems(
                 Update,
                 update_diagnostics.in_set(ClientScheduleSet::Diagnostics),
@@ -172,7 +201,8 @@ fn spawn_text_panel(
 
 fn update_diagnostics(
     view: Res<DiagnosticView>,
-    presentation: Res<OfflinePresentation>,
+    presentation: Res<DiagnosticPresentation>,
+    feedback: Res<ConnectActionFeedback>,
     mut texts: Query<(&DiagnosticText, &mut Text, &mut TextColor)>,
 ) {
     let snapshot = view.snapshot();
@@ -194,7 +224,8 @@ fn update_diagnostics(
                 color.0 = INK;
             }
             DiagnosticText::Ladder => {
-                text.0 = format_session_ladder(snapshot.phase.clone(), view.is_live_entry());
+                text.0 =
+                    format_session_ladder(display_phase(&snapshot.phase), view.is_live_entry());
                 color.0 = MUTED;
             }
             DiagnosticText::Inspector => {
@@ -229,13 +260,16 @@ fn update_diagnostics(
                 color.0 = MUTED;
             }
             DiagnosticText::Acceptance => {
-                let (value, accepted) = format_acceptance(snapshot, view.is_live_entry());
+                let (value, accepted) =
+                    format_acceptance(snapshot, view.is_live_entry(), feedback.0);
                 text.0 = value;
                 color.0 = if accepted { LIME } else { AMBER };
             }
             DiagnosticText::Connect => {
-                text.0 = format_connect_action(snapshot.phase.clone(), view.is_live_entry());
-                color.0 = if view.is_live_entry() && matches!(snapshot.phase, ClientPhase::Offline)
+                let display_phase = display_phase(&snapshot.phase);
+                text.0 = format_connect_action(display_phase, view.is_live_entry());
+                color.0 = if view.is_live_entry()
+                    && matches!(display_phase, DisplayPhase::Offline | DisplayPhase::Failed)
                 {
                     LIME
                 } else {
@@ -248,15 +282,26 @@ fn update_diagnostics(
 
 fn dispatch_connect_entry(
     interactions: Query<&Interaction, (Changed<Interaction>, With<ConnectEntryAction>)>,
-    session: Res<crate::SessionBridge>,
+    session: Res<SessionBridge>,
     view: Res<DiagnosticView>,
+    mut feedback: ResMut<ConnectActionFeedback>,
 ) {
     for interaction in &interactions {
-        if *interaction == Interaction::Pressed
-            && view.is_live_entry()
-            && view.snapshot().phase == ClientPhase::Offline
-        {
-            let _ = session.start_entry();
+        if *interaction != Interaction::Pressed || !view.is_live_entry() {
+            continue;
+        }
+        let result = match display_phase(&view.snapshot().phase) {
+            DisplayPhase::Offline => session.start_entry(),
+            DisplayPhase::Failed => session.retry_entry(),
+            DisplayPhase::Entering(_) | DisplayPhase::MovementReady | DisplayPhase::Proving => {
+                continue;
+            }
+        };
+        feedback.0 = result
+            .err()
+            .map(|_| "ENTRY CONTROL UNAVAILABLE / restart the Diagnostic World and retry");
+        if result.is_ok() {
+            feedback.0 = None;
         }
     }
 }
@@ -279,21 +324,15 @@ fn format_run_speed(run_speed: Option<f32>) -> String {
     )
 }
 
-fn format_session_ladder(phase: ClientPhase, live_entry: bool) -> String {
+fn format_session_ladder(phase: DisplayPhase, live_entry: bool) -> String {
     if !live_entry {
         return "SESSION LADDER\n\n>  OFFLINE\n-  LOGIN\n-  REALM SELECTION\n-  WORLD AUTH\n-  CHARACTER\n-  BOOTSTRAP\n-  MOVEMENT READY\n\nOFFLINE PRESENTATION\nNetwork capability is absent."
             .to_owned();
     }
     let active = match phase {
-        ClientPhase::Offline | ClientPhase::ProvingMovement(_) | ClientPhase::Failed(_) => 0,
-        ClientPhase::Entering(EntryStage::LoginConnection) => 1,
-        ClientPhase::Entering(EntryStage::LoginAuthentication) => 2,
-        ClientPhase::Entering(EntryStage::RealmSelection) => 3,
-        ClientPhase::Entering(EntryStage::WorldAuthentication) => 4,
-        ClientPhase::Entering(EntryStage::CharacterSelection) => 5,
-        ClientPhase::Entering(EntryStage::Bootstrap) => 6,
-        ClientPhase::Entering(EntryStage::ControlSynchronization) => 7,
-        ClientPhase::MovementReady => 8,
+        DisplayPhase::Offline | DisplayPhase::Proving | DisplayPhase::Failed => 0,
+        DisplayPhase::Entering(active) => active,
+        DisplayPhase::MovementReady => 8,
     };
     let stages = [
         "OFFLINE",
@@ -308,7 +347,7 @@ fn format_session_ladder(phase: ClientPhase, live_entry: bool) -> String {
     ];
     let mut output = String::from("SESSION LADDER\n\n");
     for (index, stage) in stages.iter().enumerate() {
-        let marker = if matches!(phase, ClientPhase::Failed(_)) {
+        let marker = if phase == DisplayPhase::Failed {
             if index == 0 { "!" } else { "-" }
         } else if index < active {
             "+"
@@ -323,15 +362,15 @@ fn format_session_ladder(phase: ClientPhase, live_entry: bool) -> String {
     output
 }
 
-fn format_connect_action(phase: ClientPhase, live_entry: bool) -> String {
+fn format_connect_action(phase: DisplayPhase, live_entry: bool) -> String {
     if !live_entry {
         return "OFFLINE MODE\nNo realm connection".to_owned();
     }
     match phase {
-        ClientPhase::Offline => "CONNECT & ENTER\nREFERENCE REALM".to_owned(),
-        ClientPhase::MovementReady => "MOVEMENT READY\nInput remains gated".to_owned(),
-        ClientPhase::Failed(_) => "ENTRY FAILED\nFollow recovery guidance".to_owned(),
-        ClientPhase::Entering(_) | ClientPhase::ProvingMovement(_) => {
+        DisplayPhase::Offline => "CONNECT & ENTER\nREFERENCE REALM".to_owned(),
+        DisplayPhase::MovementReady => "MOVEMENT READY\nInput remains gated".to_owned(),
+        DisplayPhase::Failed => "RETRY ENTRY\nREFERENCE REALM".to_owned(),
+        DisplayPhase::Entering(_) | DisplayPhase::Proving => {
             "ENTERING REFERENCE REALM\nPlease wait".to_owned()
         }
     }
@@ -340,6 +379,7 @@ fn format_connect_action(phase: ClientPhase, live_entry: bool) -> String {
 fn format_acceptance(
     snapshot: &client_session::ClientSnapshot,
     live_entry: bool,
+    control_feedback: Option<&str>,
 ) -> (String, bool) {
     if !live_entry {
         let offline = snapshot.phase == ClientPhase::Offline;
@@ -351,24 +391,30 @@ fn format_acceptance(
             offline,
         );
     }
-    match &snapshot.phase {
-        ClientPhase::MovementReady => (
+    match display_phase(&snapshot.phase) {
+        DisplayPhase::MovementReady => (
             "PASS  MOVEMENT-READY ENTRY\n\nEntry Anchor and Realm-observed Pose are live.\n\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nMovement intent and packets remain disabled.".to_owned(),
             true,
         ),
-        ClientPhase::Failed(recovery) => (
-            format!(
-                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nInput stays gated. No movement packet was sent.",
+        DisplayPhase::Failed => (
+            {
+                let ClientPhase::Failed(recovery) = &snapshot.phase else {
+                    unreachable!("display phase only reports failure for failed snapshots");
+                };
+                format!(
+                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nRETRY ENTRY restarts one complete configured operation.\nInput stays gated. No movement packet was sent.{}",
                 recovery.category,
                 recovery.action,
                 snapshot
                     .latest_failure
                     .as_ref()
                     .map_or("No additional diagnostic", client_session::ClientFailure::context),
-            ),
+                control_feedback.map_or_else(String::new, |message| format!("\n\n{message}")),
+                )
+            },
             false,
         ),
-        _ => (
+        DisplayPhase::Offline | DisplayPhase::Entering(_) | DisplayPhase::Proving => (
             "WAITING FOR ENTRY\n\nConnect & Enter starts one complete configured operation.\n\nInput stays gated until the realm reaches MovementReady.".to_owned(),
             false,
         ),
@@ -413,7 +459,7 @@ fn format_event_tail(view: &DiagnosticView) -> String {
 mod tests {
     use client_session::{ClientEvent, ClientEventKind, ClientSnapshot, SanitizedIdentity};
 
-    use crate::DiagnosticView;
+    use crate::{DiagnosticMode, DiagnosticView};
 
     use super::{format_event_tail, format_pose};
 
@@ -428,7 +474,7 @@ mod tests {
                 kind: ClientEventKind::IdentityConfigured { identity },
             }]
             .into(),
-            live_entry: false,
+            mode: DiagnosticMode::Offline,
         };
 
         let output = format_event_tail(&view).to_ascii_lowercase();

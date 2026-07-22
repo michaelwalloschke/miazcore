@@ -50,6 +50,7 @@ if width < 1024 or height < 720:
     raise SystemExit(f"live Diagnostic World gate failed: screenshot is only {width}x{height}")
 
 sidecar = json.loads(sidecar_path.read_text())
+anchor = sidecar.get("entry_anchor")
 expected = {
     "schema": "miazcore.live-render-proof.v1",
     "phase": "MovementReady",
@@ -58,7 +59,7 @@ expected = {
     "client_build": 12340,
     "character": "Miaztest",
     "movement_publication": "disabled",
-    "submitted_pose": None,
+    "submitted_pose": anchor,
 }
 for key, value in expected.items():
     if sidecar.get(key) != value:
@@ -67,7 +68,6 @@ for key, value in expected.items():
         )
 if sidecar.get("run_speed", 0) <= 0:
     raise SystemExit("live Diagnostic World gate failed: run speed is not positive")
-anchor = sidecar.get("entry_anchor")
 rendered = sidecar.get("rendered_pose")
 observed = sidecar.get("realm_observed_pose")
 for label, pose in (("entry anchor", anchor), ("rendered pose", rendered), ("realm-observed pose", observed)):
@@ -75,7 +75,7 @@ for label, pose in (("entry anchor", anchor), ("rendered pose", rendered), ("rea
         raise SystemExit(f"live Diagnostic World gate failed: {label} is missing map 0")
     if abs(pose.get("east", 0) + 8949.95) > 0.01 or abs(pose.get("north", 0) + 132.493) > 0.01:
         raise SystemExit(f"live Diagnostic World gate failed: {label} does not match the Entry Anchor")
-if rendered != anchor or observed != anchor:
+if rendered != anchor or sidecar.get("submitted_pose") != anchor or observed != anchor:
     raise SystemExit("live Diagnostic World gate failed: entry pose truths diverged before movement")
 
 print(f"live Diagnostic World: {width}x{height} Metal screenshot and MovementReady sidecar passed")

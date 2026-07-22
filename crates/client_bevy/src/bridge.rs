@@ -23,7 +23,21 @@ pub trait DiagnosticSession: Send + Sync + 'static {
     ///
     /// Returns an error when the session cannot accept the command.
     fn send_control(&self, command: ControlCommand) -> Result<(), BoundaryError>;
-    fn is_live_entry(&self) -> bool;
+    fn diagnostic_mode(&self) -> DiagnosticMode;
+}
+
+/// The deliberately small capability profile exposed to the Diagnostic World.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticMode {
+    Offline,
+    LiveEntry,
+}
+
+impl DiagnosticMode {
+    #[must_use]
+    pub const fn is_live_entry(self) -> bool {
+        matches!(self, Self::LiveEntry)
+    }
 }
 
 impl DiagnosticSession for OfflineSession {
@@ -39,8 +53,8 @@ impl DiagnosticSession for OfflineSession {
         self.send_control(command)
     }
 
-    fn is_live_entry(&self) -> bool {
-        false
+    fn diagnostic_mode(&self) -> DiagnosticMode {
+        DiagnosticMode::Offline
     }
 }
 
@@ -57,30 +71,30 @@ impl DiagnosticSession for LiveDiagnosticSession {
         self.send_control(command)
     }
 
-    fn is_live_entry(&self) -> bool {
-        true
+    fn diagnostic_mode(&self) -> DiagnosticMode {
+        DiagnosticMode::LiveEntry
     }
 }
 
 #[derive(Resource)]
 pub struct SessionBridge {
     session: Box<dyn DiagnosticSession>,
-    live_entry: bool,
+    mode: DiagnosticMode,
 }
 
 impl SessionBridge {
     #[must_use]
     pub fn new(session: impl DiagnosticSession) -> Self {
-        let live_entry = session.is_live_entry();
+        let mode = session.diagnostic_mode();
         Self {
             session: Box::new(session),
-            live_entry,
+            mode,
         }
     }
 
     #[must_use]
     pub const fn is_live_entry(&self) -> bool {
-        self.live_entry
+        self.mode.is_live_entry()
     }
 
     /// Begin the one complete configured world-entry operation.
@@ -92,13 +106,23 @@ impl SessionBridge {
     pub fn start_entry(&self) -> Result<(), BoundaryError> {
         self.session.send_control(ControlCommand::StartEntry)
     }
+
+    /// Retry one previously failed configured world-entry operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session worker is no longer able to accept a
+    /// bounded semantic command.
+    pub fn retry_entry(&self) -> Result<(), BoundaryError> {
+        self.session.send_control(ControlCommand::RetryEntry)
+    }
 }
 
 #[derive(Clone, Debug, Resource)]
 pub struct DiagnosticView {
     pub(crate) snapshot: ClientSnapshot,
     pub(crate) recent_events: VecDeque<ClientEvent>,
-    pub(crate) live_entry: bool,
+    pub(crate) mode: DiagnosticMode,
 }
 
 impl DiagnosticView {
@@ -114,7 +138,7 @@ impl DiagnosticView {
 
     #[must_use]
     pub const fn is_live_entry(&self) -> bool {
-        self.live_entry
+        self.mode.is_live_entry()
     }
 }
 
@@ -124,7 +148,7 @@ impl FromWorld for DiagnosticView {
         Self {
             snapshot: session.session.snapshot(),
             recent_events: session.session.drain_events().into(),
-            live_entry: session.is_live_entry(),
+            mode: session.mode,
         }
     }
 }

@@ -9,7 +9,7 @@ const AMBER: Color = Color::srgb(0.94, 0.74, 0.41);
 const PARKED_MARKER_HEIGHT: f32 = -1_000.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Resource)]
-pub struct OfflinePresentation {
+pub struct DiagnosticPresentation {
     pub rendered_planar: Vec2,
     pub heading: f32,
     pub(crate) entry_anchor: Option<client_session::WorldPose>,
@@ -37,7 +37,15 @@ fn parked_marker_translation() -> Vec3 {
     Vec3::new(0.0, PARKED_MARKER_HEIGHT, 0.0)
 }
 
-impl OfflinePresentation {
+fn rendered_avatar_translation(presentation: &DiagnosticPresentation, live_entry: bool) -> Vec3 {
+    if live_entry && presentation.entry_anchor.is_none() {
+        parked_marker_translation()
+    } else {
+        offline_planar_to_scene(presentation.rendered_planar, 0.74)
+    }
+}
+
+impl DiagnosticPresentation {
     pub fn set_proof_pose(&mut self) {
         self.rendered_planar = Vec2::new(2.4, -1.6);
         self.heading = 2.16;
@@ -76,7 +84,7 @@ pub(crate) struct DiagnosticWorldPlugin;
 
 impl Plugin for DiagnosticWorldPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<OfflinePresentation>()
+        app.init_resource::<DiagnosticPresentation>()
             .insert_resource(ClearColor(Color::srgb(0.018, 0.028, 0.024)))
             .insert_resource(GlobalAmbientLight {
                 color: Color::srgb(0.32, 0.42, 0.36),
@@ -218,7 +226,7 @@ fn setup_diagnostic_world(
 
 fn project_authoritative_entry(
     view: Res<DiagnosticView>,
-    mut presentation: ResMut<OfflinePresentation>,
+    mut presentation: ResMut<DiagnosticPresentation>,
 ) {
     if view.is_live_entry() {
         presentation.project_authoritative_entry(view.snapshot());
@@ -227,7 +235,7 @@ fn project_authoritative_entry(
 
 #[allow(clippy::type_complexity)]
 fn project_pose_markers(
-    presentation: Res<OfflinePresentation>,
+    presentation: Res<DiagnosticPresentation>,
     view: Res<DiagnosticView>,
     mut avatar: Single<
         &mut Transform,
@@ -258,8 +266,10 @@ fn project_pose_markers(
     >,
     mut entry_anchor: Query<&mut Transform, With<EntryAnchorMarker>>,
 ) {
-    avatar.translation = offline_planar_to_scene(presentation.rendered_planar, 0.74);
-    avatar.rotation = Quat::from_rotation_y(presentation.heading);
+    avatar.translation = rendered_avatar_translation(&presentation, view.is_live_entry());
+    if !(view.is_live_entry() && presentation.entry_anchor.is_none()) {
+        avatar.rotation = Quat::from_rotation_y(presentation.heading);
+    }
 
     let anchor = presentation.entry_anchor;
     if let (Some(anchor), Some(submitted_pose)) = (anchor, view.snapshot().submitted_pose) {
@@ -291,7 +301,10 @@ mod tests {
     use bevy::prelude::Vec3;
     use client_session::WorldPose;
 
-    use super::world_pose_to_scene;
+    use super::{
+        DiagnosticPresentation, PARKED_MARKER_HEIGHT, rendered_avatar_translation,
+        world_pose_to_scene,
+    };
 
     #[test]
     fn entry_anchor_is_the_local_diagnostic_world_origin() {
@@ -312,5 +325,18 @@ mod tests {
             ..anchor
         };
         assert_eq!(world_pose_to_scene(anchor, other_map, 0.34), None);
+    }
+
+    #[test]
+    fn live_avatar_is_parked_until_an_authoritative_entry_anchor_exists() {
+        let presentation = DiagnosticPresentation::default();
+        assert_eq!(
+            rendered_avatar_translation(&presentation, true),
+            Vec3::new(0.0, PARKED_MARKER_HEIGHT, 0.0)
+        );
+        assert_eq!(
+            rendered_avatar_translation(&presentation, false),
+            Vec3::new(0.0, 0.74, 0.0)
+        );
     }
 }

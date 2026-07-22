@@ -1,7 +1,7 @@
 use bevy::{prelude::*, window::PrimaryWindow};
 
 use crate::{
-    ClientScheduleSet, DiagnosticView, camera::CameraRig, input_axis, world::OfflinePresentation,
+    ClientScheduleSet, DiagnosticView, camera::CameraRig, input_axis, world::DiagnosticPresentation,
 };
 
 const OFFLINE_DISPLAY_SPEED: f32 = 3.5;
@@ -24,9 +24,12 @@ fn collect_offline_presentation_input(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Res<CameraRig>,
     view: Res<DiagnosticView>,
-    mut presentation: ResMut<OfflinePresentation>,
+    mut presentation: ResMut<DiagnosticPresentation>,
 ) {
-    if !window.focused || view.snapshot().phase != client_session::ClientPhase::Offline {
+    if !window.focused
+        || view.is_live_entry()
+        || view.snapshot().phase != client_session::ClientPhase::Offline
+    {
         return;
     }
     let right = input_axis(&keys, KeyCode::KeyD, KeyCode::KeyA);
@@ -44,7 +47,7 @@ fn collect_offline_presentation_input(
 }
 
 pub(crate) fn advance_offline_presentation(
-    presentation: &mut OfflinePresentation,
+    presentation: &mut DiagnosticPresentation,
     local_input: Vec2,
     camera_yaw: f32,
     distance: f32,
@@ -67,11 +70,11 @@ mod tests {
     use bevy::prelude::Vec2;
 
     use super::{DISPLAY_ENVELOPE_RADIUS, advance_offline_presentation};
-    use crate::world::OfflinePresentation;
+    use crate::world::DiagnosticPresentation;
 
     #[test]
     fn offline_motion_is_camera_relative_and_stays_inside_display_envelope() {
-        let mut presentation = OfflinePresentation::default();
+        let mut presentation = DiagnosticPresentation::default();
 
         advance_offline_presentation(&mut presentation, Vec2::Y, std::f32::consts::FRAC_PI_2, 2.0);
         assert!((presentation.rendered_planar.x + 2.0).abs() < 0.000_1);
@@ -85,10 +88,10 @@ mod tests {
 
     #[test]
     fn invalid_or_idle_steps_do_not_change_presentation() {
-        let mut presentation = OfflinePresentation::default();
+        let mut presentation = DiagnosticPresentation::default();
         advance_offline_presentation(&mut presentation, Vec2::ZERO, 0.0, 3.0);
         advance_offline_presentation(&mut presentation, Vec2::Y, 0.0, f32::NAN);
         advance_offline_presentation(&mut presentation, Vec2::Y, 0.0, -1.0);
-        assert_eq!(presentation, OfflinePresentation::default());
+        assert_eq!(presentation, DiagnosticPresentation::default());
     }
 }

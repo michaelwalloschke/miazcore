@@ -8,7 +8,7 @@ use bevy::{
 
 use crate::{
     ClientScheduleSet, input_axis,
-    world::{OfflinePresentation, offline_planar_to_scene},
+    world::{DiagnosticPresentation, offline_planar_to_scene},
 };
 
 #[derive(Debug, Resource)]
@@ -67,7 +67,7 @@ fn update_chase_camera(
     mouse_scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     window: Single<&Window, With<PrimaryWindow>>,
-    presentation: Res<OfflinePresentation>,
+    presentation: Res<DiagnosticPresentation>,
     mut rig: ResMut<CameraRig>,
     mut camera: Single<&mut Transform, With<ChaseCamera>>,
 ) {

@@ -8,12 +8,13 @@ use std::{
 
 use bevy::prelude::{App, MinimalPlugins};
 use client_bevy::{
-    ClientScheduleSet, DiagnosticSession, DiagnosticView, LearningClientPlugin, SessionBridge,
-    SystemOrderTrace,
+    ClientScheduleSet, DiagnosticMode, DiagnosticSession, DiagnosticView, LearningClientPlugin,
+    SessionBridge, SystemOrderTrace,
 };
 use client_session::{
     BoundaryError, ClientConfig, ClientConfigSpec, ClientEvent, ClientEventKind, ClientPhase,
-    ControlCommand, CredentialPaths, OfflineSession, SanitizedIdentity, WorldPose,
+    ControlCommand, CredentialPaths, FailureCategory, OfflineSession, QueueCounters, Recovery,
+    RecoveryAction, SanitizedIdentity, WorldPose,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +80,7 @@ fn minimal_plugins_projects_live_entry_truth_and_only_starts_the_complete_operat
     let mut snapshot = client_session::ClientSnapshot::offline(identity.clone());
     snapshot.phase = ClientPhase::MovementReady;
     snapshot.entry_anchor = Some(anchor);
+    snapshot.submitted_pose = Some(anchor);
     snapshot.realm_observed_pose = Some(anchor);
     snapshot.run_speed = Some(7.0);
     let fake = FakeLiveSession::new(
@@ -108,12 +110,59 @@ fn minimal_plugins_projects_live_entry_truth_and_only_starts_the_complete_operat
     assert!(view.is_live_entry());
     assert_eq!(view.snapshot().phase, ClientPhase::MovementReady);
     assert_eq!(view.snapshot().entry_anchor, Some(anchor));
+    assert_eq!(view.snapshot().submitted_pose, Some(anchor));
     assert_eq!(view.snapshot().realm_observed_pose, Some(anchor));
     assert_eq!(view.snapshot().run_speed, Some(7.0));
     assert_eq!(view.recent_events().count(), 1);
     assert_eq!(
         controls.lock().unwrap().as_slice(),
         &[ControlCommand::StartEntry]
+    );
+}
+
+#[test]
+fn minimal_plugins_projects_failed_live_entry_and_explicit_retry_with_bounded_history() {
+    let identity =
+        SanitizedIdentity::new(1, "Miazcore Reference Realm", "Miaztest", 12_340).unwrap();
+    let mut snapshot = client_session::ClientSnapshot::offline(identity);
+    snapshot.phase = ClientPhase::Failed(Recovery {
+        category: FailureCategory::Transport,
+        action: RecoveryAction::RetryExplicitly,
+    });
+    snapshot.queue_counters = QueueCounters {
+        control_queued: 1,
+        event_queued: 9,
+        movement_revision: 0,
+        snapshot_revision: 7,
+    };
+    let events = (0..9)
+        .map(|sequence| ClientEvent {
+            sequence,
+            kind: ClientEventKind::PhaseChanged {
+                phase: ClientPhase::Offline,
+            },
+        })
+        .collect();
+    let fake = FakeLiveSession::new(snapshot, events);
+    let controls = Arc::clone(&fake.controls);
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(SessionBridge::new(fake))
+        .add_plugins(LearningClientPlugin::headless());
+    app.world()
+        .resource::<SessionBridge>()
+        .retry_entry()
+        .unwrap();
+    app.update();
+
+    let view = app.world().resource::<DiagnosticView>();
+    assert!(matches!(view.snapshot().phase, ClientPhase::Failed(_)));
+    assert_eq!(view.snapshot().queue_counters.event_queued, 9);
+    assert_eq!(view.recent_events().count(), 8);
+    assert_eq!(
+        controls.lock().unwrap().as_slice(),
+        &[ControlCommand::RetryEntry]
     );
 }
 
@@ -206,7 +255,7 @@ impl DiagnosticSession for FakeLiveSession {
         Ok(())
     }
 
-    fn is_live_entry(&self) -> bool {
-        true
+    fn diagnostic_mode(&self) -> DiagnosticMode {
+        DiagnosticMode::LiveEntry
     }
 }
