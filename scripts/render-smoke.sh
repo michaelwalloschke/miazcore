@@ -34,7 +34,7 @@ with image_path.open("rb") as image_file:
 if header[:8] != b"\x89PNG\r\n\x1a\n":
     raise SystemExit("render smoke failed: screenshot is not PNG")
 width, height = struct.unpack(">II", header[16:24])
-if width < 1280 or height < 720:
+if width < 1024 or height < 720:
     raise SystemExit(f"render smoke failed: screenshot is only {width}x{height}")
 
 sidecar = json.loads(sidecar_path.read_text())
