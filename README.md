@@ -148,7 +148,7 @@ scripts/live-movement-ready.sh
 ```
 
 This production session selects `Miaztest`, sends `CMSG_PLAYER_LOGIN`, validates
-the login anchor against the selected character and authoritative self create,
+the Entry Anchor against the selected character and authoritative self create,
 retains the realm-provided run speed, and completes time and no-flight
 acknowledgements. It must emit `MovementReady` exactly once, submit no movement,
 disconnect cleanly, and leave the realm healthy. Prediction, movement packets,

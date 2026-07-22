@@ -1,0 +1,10 @@
+format=miazcore-wire-fixture-v1
+build=12340
+direction=world-to-client
+opcode=SMSG_UPDATE_OBJECT-sanitized-self-projection/0x00A9
+semantics=live-observed ordinary-ground self pose and all nine speeds projected onto synthetic GUID timestamp and opaque values
+byte_length=90
+sha256=5a8647d6f0654af08ae6ae52af511253e89c6cd80ba3d03d1c99ecd28735ae32
+provenance=sanitized semantic projection captured from the reset-scoped pinned Reference Realm and independently encoded with Python struct primitives on 2026-07-22
+upstream_pin=azerothcore/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f
+payload=world-entry-live-self-projection-body.hex

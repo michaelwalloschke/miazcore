@@ -384,10 +384,10 @@ impl UnsetCanFly {
 ///
 /// # Errors
 ///
-/// Returns [`ProtocolError::MalformedFrame`] when the payload is truncated,
+/// Returns [`ProtocolError::MalformedWorldEntry`] when the payload is truncated,
 /// contains non-finite coordinates, or has trailing bytes.
 pub fn decode_login_verify_world(payload: &[u8]) -> Result<WorldEntryLocation, ProtocolError> {
-    let mut cursor = Cursor::new(payload);
+    let mut cursor = Cursor::new(payload, SMSG_LOGIN_VERIFY_WORLD);
     let location = WorldEntryLocation {
         map_id: cursor.u32()?,
         position: cursor.vector3()?,
@@ -420,9 +420,9 @@ pub fn decode_authoritative_self_update(
             decompressed = decompress_update(payload)?;
             decompressed.as_slice()
         }
-        _ => return Err(ProtocolError::MalformedFrame),
+        _ => return Err(malformed_world_entry(opcode, 0)),
     };
-    parse_update_body(body, selected_guid)
+    parse_update_body(body, selected_guid, opcode)
 }
 
 /// Decode `AzerothCore`'s build-12340 run-speed control message.
@@ -431,15 +431,15 @@ pub fn decode_authoritative_self_update(
 ///
 /// Returns a protocol error for malformed, non-finite, or non-positive input.
 pub fn decode_force_run_speed_change(payload: &[u8]) -> Result<ForceRunSpeedChange, ProtocolError> {
-    let mut cursor = Cursor::new(payload);
+    let mut cursor = Cursor::new(payload, SMSG_FORCE_RUN_SPEED_CHANGE);
     let guid = cursor.packed_guid()?;
     let counter = cursor.u32()?;
     if cursor.u8()? != 0 {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(cursor.malformed());
     }
     let run_speed = cursor.finite_f32()?;
     if run_speed <= 0.0 {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(cursor.malformed());
     }
     cursor.finish()?;
     Ok(ForceRunSpeedChange {
@@ -472,7 +472,7 @@ pub fn encode_force_run_speed_change_ack(
 ///
 /// Returns a protocol error when the message is truncated or has trailing bytes.
 pub fn decode_unset_can_fly(payload: &[u8]) -> Result<UnsetCanFly, ProtocolError> {
-    let mut cursor = Cursor::new(payload);
+    let mut cursor = Cursor::new(payload, SMSG_MOVE_UNSET_CAN_FLY);
     let request = UnsetCanFly {
         guid: cursor.packed_guid()?,
         counter: cursor.u32()?,
@@ -504,7 +504,7 @@ pub fn encode_move_set_can_fly_ack(
 ///
 /// Returns a protocol error unless the payload is exactly one little-endian `u32`.
 pub fn decode_time_sync_request(payload: &[u8]) -> Result<u32, ProtocolError> {
-    let mut cursor = Cursor::new(payload);
+    let mut cursor = Cursor::new(payload, SMSG_TIME_SYNC_REQ);
     let counter = cursor.u32()?;
     cursor.finish()?;
     Ok(counter)
@@ -543,7 +543,7 @@ pub fn decode_unsupported_self_control_guid(
     ) {
         return Ok(None);
     }
-    let mut cursor = Cursor::new(payload);
+    let mut cursor = Cursor::new(payload, opcode);
     cursor.packed_guid().map(Some)
 }
 
@@ -558,28 +558,36 @@ pub fn encode_time_sync_response(counter: u32, client_time_ms: u32) -> [u8; 8] {
 fn decompress_update(payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
     let (size_bytes, compressed) = payload
         .split_at_checked(4)
-        .ok_or(ProtocolError::MalformedFrame)?;
+        .ok_or_else(|| malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, payload.len()))?;
     let declared_size = usize::try_from(u32::from_le_bytes(
         size_bytes
             .try_into()
-            .map_err(|_| ProtocolError::MalformedFrame)?,
+            .map_err(|_| malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, 0))?,
     ))
-    .map_err(|_| ProtocolError::MalformedFrame)?;
+    .map_err(|_| malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, 0))?;
     if !(4..=MAX_UPDATE_BODY_SIZE).contains(&declared_size) || compressed.is_empty() {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, 0));
     }
 
     let mut output = vec![0_u8; declared_size];
     let mut decompressor = Decompress::new(true);
-    let status = decompressor
-        .decompress(compressed, &mut output, FlushDecompress::Finish)
-        .map_err(|_| ProtocolError::MalformedFrame)?;
-    let consumed =
-        usize::try_from(decompressor.total_in()).map_err(|_| ProtocolError::MalformedFrame)?;
-    let produced =
-        usize::try_from(decompressor.total_out()).map_err(|_| ProtocolError::MalformedFrame)?;
+    let Ok(status) = decompressor.decompress(compressed, &mut output, FlushDecompress::Finish)
+    else {
+        let consumed = usize::try_from(decompressor.total_in()).unwrap_or(compressed.len());
+        return Err(malformed_world_entry(
+            SMSG_COMPRESSED_UPDATE_OBJECT,
+            4_usize.saturating_add(consumed),
+        ));
+    };
+    let consumed = usize::try_from(decompressor.total_in())
+        .map_err(|_| malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, 4))?;
+    let produced = usize::try_from(decompressor.total_out())
+        .map_err(|_| malformed_world_entry(SMSG_COMPRESSED_UPDATE_OBJECT, 4 + consumed))?;
     if status != Status::StreamEnd || consumed != compressed.len() || produced != declared_size {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(malformed_world_entry(
+            SMSG_COMPRESSED_UPDATE_OBJECT,
+            4_usize.saturating_add(consumed),
+        ));
     }
     Ok(output)
 }
@@ -587,14 +595,15 @@ fn decompress_update(payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
 fn parse_update_body(
     body: &[u8],
     selected_guid: u64,
+    opcode: u16,
 ) -> Result<Option<AuthoritativeSelfState>, ProtocolError> {
     if body.len() > MAX_UPDATE_BODY_SIZE {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(malformed_world_entry(opcode, 0));
     }
-    let mut cursor = Cursor::new(body);
+    let mut cursor = Cursor::new(body, opcode);
     let block_count = cursor.u32()?;
     if block_count > MAX_UPDATE_BLOCKS {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(cursor.malformed());
     }
     let mut found = None;
 
@@ -615,7 +624,7 @@ fn parse_update_body(
                 consume_update_mask(&mut cursor)?;
 
                 if movement.update_flags & UPDATE_FLAG_SELF != 0 && guid != selected_guid {
-                    return Err(ProtocolError::MalformedFrame);
+                    return Err(cursor.malformed());
                 }
                 if guid == selected_guid {
                     if found.is_some()
@@ -623,15 +632,15 @@ fn parse_update_body(
                         || object_type != OBJECT_TYPE_PLAYER
                         || movement.update_flags != REQUIRED_SELF_UPDATE_FLAGS
                     {
-                        return Err(ProtocolError::MalformedFrame);
+                        return Err(cursor.malformed());
                     }
                     let info = movement
                         .movement
-                        .ok_or(ProtocolError::MalformedFrame)?
+                        .ok_or_else(|| cursor.malformed())?
                         .require_supported_self()?;
-                    let speeds = movement.speeds.ok_or(ProtocolError::MalformedFrame)?;
+                    let speeds = movement.speeds.ok_or_else(|| cursor.malformed())?;
                     if speeds.run() <= 0.0 {
-                        return Err(ProtocolError::MalformedFrame);
+                        return Err(cursor.malformed());
                     }
                     found = Some(AuthoritativeSelfState {
                         guid,
@@ -643,13 +652,13 @@ fn parse_update_body(
             UPDATE_TYPE_OUT_OF_RANGE | UPDATE_TYPE_NEAR => {
                 let count = cursor.u32()?;
                 if count > MAX_GUID_LIST {
-                    return Err(ProtocolError::MalformedFrame);
+                    return Err(cursor.malformed());
                 }
                 for _ in 0..count {
                     let _ = cursor.packed_guid()?;
                 }
             }
-            _ => return Err(ProtocolError::MalformedFrame),
+            _ => return Err(cursor.malformed()),
         }
     }
     cursor.finish()?;
@@ -665,7 +674,7 @@ struct MovementBlock {
 fn parse_movement_block(cursor: &mut Cursor<'_>) -> Result<MovementBlock, ProtocolError> {
     let update_flags = cursor.u16()?;
     if update_flags & !UPDATE_FLAG_KNOWN != 0 {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(cursor.malformed());
     }
 
     let mut movement = None;
@@ -722,17 +731,17 @@ fn consume_create_spline(cursor: &mut Cursor<'_>) -> Result<(), ProtocolError> {
         SPLINE_FINAL_ANGLE => cursor.skip(4)?,
         SPLINE_FINAL_TARGET => cursor.skip(8)?,
         SPLINE_FINAL_POINT => cursor.skip(12)?,
-        _ => return Err(ProtocolError::MalformedFrame),
+        _ => return Err(cursor.malformed()),
     }
     cursor.skip(4 * 7)?;
     let node_count = cursor.u32()?;
     if node_count > MAX_SPLINE_NODES {
-        return Err(ProtocolError::MalformedFrame);
+        return Err(cursor.malformed());
     }
     let node_bytes = usize::try_from(node_count)
         .ok()
         .and_then(|count| count.checked_mul(12))
-        .ok_or(ProtocolError::MalformedFrame)?;
+        .ok_or_else(|| cursor.malformed())?;
     cursor.skip(node_bytes)?;
     cursor.skip(1 + 12)?;
     Ok(())
@@ -744,11 +753,11 @@ fn consume_update_mask(cursor: &mut Cursor<'_>) -> Result<(), ProtocolError> {
     for _ in 0..word_count {
         value_count = value_count
             .checked_add(cursor.u32()?.count_ones() as usize)
-            .ok_or(ProtocolError::MalformedFrame)?;
+            .ok_or_else(|| cursor.malformed())?;
     }
     let value_bytes = value_count
         .checked_mul(4)
-        .ok_or(ProtocolError::MalformedFrame)?;
+        .ok_or_else(|| cursor.malformed())?;
     cursor.skip(value_bytes)
 }
 
@@ -784,25 +793,41 @@ fn push_packed_guid(output: &mut Vec<u8>, guid: u64) {
     );
 }
 
+const fn malformed_world_entry(opcode: u16, byte_offset: usize) -> ProtocolError {
+    ProtocolError::MalformedWorldEntry {
+        opcode,
+        byte_offset,
+    }
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     offset: usize,
+    opcode: u16,
 }
 
 impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+    const fn new(bytes: &'a [u8], opcode: u16) -> Self {
+        Self {
+            bytes,
+            offset: 0,
+            opcode,
+        }
+    }
+
+    const fn malformed(&self) -> ProtocolError {
+        malformed_world_entry(self.opcode, self.offset)
     }
 
     fn take(&mut self, count: usize) -> Result<&'a [u8], ProtocolError> {
         let end = self
             .offset
             .checked_add(count)
-            .ok_or(ProtocolError::MalformedFrame)?;
+            .ok_or_else(|| self.malformed())?;
         let value = self
             .bytes
             .get(self.offset..end)
-            .ok_or(ProtocolError::MalformedFrame)?;
+            .ok_or_else(|| self.malformed())?;
         self.offset = end;
         Ok(value)
     }
@@ -818,30 +843,22 @@ impl<'a> Cursor<'a> {
 
     fn u16(&mut self) -> Result<u16, ProtocolError> {
         Ok(u16::from_le_bytes(
-            self.take(2)?
-                .try_into()
-                .map_err(|_| ProtocolError::MalformedFrame)?,
+            self.take(2)?.try_into().map_err(|_| self.malformed())?,
         ))
     }
 
     fn u32(&mut self) -> Result<u32, ProtocolError> {
         Ok(u32::from_le_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| ProtocolError::MalformedFrame)?,
+            self.take(4)?.try_into().map_err(|_| self.malformed())?,
         ))
     }
 
     fn finite_f32(&mut self) -> Result<f32, ProtocolError> {
-        let value = f32::from_le_bytes(
-            self.take(4)?
-                .try_into()
-                .map_err(|_| ProtocolError::MalformedFrame)?,
-        );
+        let value = f32::from_le_bytes(self.take(4)?.try_into().map_err(|_| self.malformed())?);
         value
             .is_finite()
             .then_some(value)
-            .ok_or(ProtocolError::MalformedFrame)
+            .ok_or_else(|| self.malformed())
     }
 
     fn vector3(&mut self) -> Result<[f32; 3], ProtocolError> {
@@ -862,13 +879,15 @@ impl<'a> Cursor<'a> {
     fn finish(self) -> Result<(), ProtocolError> {
         (self.offset == self.bytes.len())
             .then_some(())
-            .ok_or(ProtocolError::MalformedFrame)
+            .ok_or_else(|| self.malformed())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AcoreJumpInfo, AcoreMovementInfo, Cursor, MOVEMENT_FLAG_FALLING};
+    use super::{
+        AcoreJumpInfo, AcoreMovementInfo, Cursor, MOVEMENT_FLAG_FALLING, SMSG_UPDATE_OBJECT,
+    };
 
     #[test]
     fn acore_movement_codec_preserves_integer_fall_time_and_jump_order() {
@@ -894,7 +913,7 @@ mod tests {
         assert_eq!(&encoded[34..38], &0.25_f32.to_le_bytes());
         assert_eq!(&encoded[38..42], &0.75_f32.to_le_bytes());
 
-        let mut cursor = Cursor::new(&encoded);
+        let mut cursor = Cursor::new(&encoded, SMSG_UPDATE_OBJECT);
         assert_eq!(AcoreMovementInfo::decode(&mut cursor).unwrap(), expected);
         cursor.finish().unwrap();
     }

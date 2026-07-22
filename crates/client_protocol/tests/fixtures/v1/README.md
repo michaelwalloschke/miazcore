@@ -22,3 +22,9 @@ The world-entry transcript extends that synthetic character with map `0`, GUID
 non-floating-point fall timer bit pattern, run-speed control, no-flight control,
 and time synchronization. The compressed update was produced independently with
 Python zlib; production Rust did not generate any expected body or digest.
+
+`world-entry-live-self-projection-body` is the sole live-derived fixture. It is
+a semantic projection, not an authenticated capture: only the reset fixture's
+decoded pose and nine speeds were retained. Its GUID, timestamp, and opaque
+update values are synthetic. The accompanying Slice 15 evidence records the
+exact image and sanitization procedure.

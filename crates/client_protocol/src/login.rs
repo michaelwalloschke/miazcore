@@ -16,6 +16,7 @@ pub enum ProtocolError {
     Io(io::ErrorKind),
     InvalidCredentialEncoding,
     MalformedFrame,
+    MalformedWorldEntry { opcode: u16, byte_offset: usize },
     UnsupportedMovementState,
     UnsupportedSecurity,
     InvalidSrpParameters,
@@ -29,6 +30,13 @@ impl fmt::Display for ProtocolError {
                 formatter.write_str("login credential encoding is unsupported")
             }
             Self::MalformedFrame => formatter.write_str("login frame is malformed"),
+            Self::MalformedWorldEntry {
+                opcode,
+                byte_offset,
+            } => write!(
+                formatter,
+                "world-entry opcode {opcode:#06x} is malformed at byte offset {byte_offset}"
+            ),
             Self::UnsupportedMovementState => {
                 formatter.write_str("world movement state is outside the controlled capability")
             }

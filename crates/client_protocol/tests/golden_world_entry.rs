@@ -77,6 +77,36 @@ fn golden_world_entry_transcript_matches_selective_production_codecs() {
 }
 
 #[test]
+fn sanitized_live_self_projection_preserves_observed_pose_and_all_nine_speeds() {
+    let state = decode_authoritative_self_update(
+        SMSG_UPDATE_OBJECT,
+        &fixture("world-entry-live-self-projection-body.hex"),
+        SELECTED_GUID,
+    )
+    .unwrap()
+    .expect("sanitized live projection contains selected self");
+    assert_eq!(state.movement().flags(), 0);
+    assert_eq!(state.movement().flags2(), 0);
+    assert_eq!(state.movement().timestamp(), 0);
+    assert_eq!(state.movement().fall_time_ms(), 0);
+    assert_f32_array(state.movement().position(), [-8949.95, -132.493, 83.5312]);
+    assert_f32(state.movement().orientation(), 0.0);
+    for (actual, expected) in state.speeds().values().into_iter().zip([
+        2.5,
+        7.0,
+        4.5,
+        4.722_222,
+        2.5,
+        7.0,
+        4.5,
+        3.141_594,
+        f32::from_bits(0x4048_f5c3),
+    ]) {
+        assert_f32(actual, expected);
+    }
+}
+
+#[test]
 fn malformed_or_ambiguous_self_updates_fail_closed() {
     let valid = fixture("world-entry-self-update-body.hex");
 
@@ -166,10 +196,16 @@ fn compressed_updates_enforce_declared_size_stream_end_and_single_layer() {
 }
 
 fn assert_malformed(opcode: u16, payload: &[u8]) {
-    assert!(matches!(
-        decode_authoritative_self_update(opcode, payload, SELECTED_GUID),
-        Err(ProtocolError::MalformedFrame)
-    ));
+    match decode_authoritative_self_update(opcode, payload, SELECTED_GUID) {
+        Err(ProtocolError::MalformedWorldEntry {
+            opcode: actual_opcode,
+            byte_offset,
+        }) => {
+            assert_eq!(actual_opcode, opcode);
+            assert!(byte_offset <= 1024 * 1024);
+        }
+        result => panic!("expected offset-bearing malformed update, got {result:?}"),
+    }
 }
 
 fn assert_f32(actual: f32, expected: f32) {

@@ -32,7 +32,7 @@ fn every_v1_manifest_is_complete_and_matches_its_independent_payload() {
         })
         .collect::<Vec<_>>();
     manifests.sort();
-    assert_eq!(manifests.len(), 23);
+    assert_eq!(manifests.len(), 24);
 
     for path in manifests {
         let records = parse_manifest(&path);

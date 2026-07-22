@@ -61,6 +61,49 @@ pub(crate) enum WorkerTarget {
     MovementReady,
 }
 
+impl WorkerTarget {
+    const fn supports_explicit_retry(self) -> bool {
+        matches!(self, Self::MovementReady)
+    }
+
+    const fn expected_command(self, attempt_failed: bool) -> ControlCommand {
+        if self.supports_explicit_retry() && attempt_failed {
+            ControlCommand::RetryEntry
+        } else {
+            ControlCommand::StartEntry
+        }
+    }
+
+    const fn connection_count(self) -> u32 {
+        match self {
+            Self::RealmDiscovery => 1,
+            Self::CharacterSelection | Self::MovementReady => 2,
+        }
+    }
+
+    const fn io_count(self) -> u32 {
+        match self {
+            Self::RealmDiscovery => 4,
+            Self::CharacterSelection => 8,
+            Self::MovementReady => 64,
+        }
+    }
+
+    const fn stops_after_realm(self) -> bool {
+        matches!(self, Self::RealmDiscovery)
+    }
+
+    const fn stops_after_character(self) -> bool {
+        matches!(self, Self::CharacterSelection)
+    }
+}
+
+enum EntryAttemptOutcome {
+    RealmDiscovered,
+    CharacterSelected(SelectedCharacter),
+    MovementReady,
+}
+
 pub(crate) fn spawn_production_worker(
     loaded: LoadedClientConfig,
     mut boundary: WorkerBoundary,
@@ -132,12 +175,7 @@ fn run_worker_loop_for<F, C, E>(
                     boundary.disconnect();
                     return;
                 }
-                let expected_command =
-                    if target == WorkerTarget::MovementReady && movement_attempt_failed {
-                        ControlCommand::RetryEntry
-                    } else {
-                        ControlCommand::StartEntry
-                    };
+                let expected_command = target.expected_command(movement_attempt_failed);
                 if command != expected_command {
                     let failure = ClientFailure::new(
                         FailureCategory::Configuration,
@@ -161,7 +199,7 @@ fn run_worker_loop_for<F, C, E>(
                 if command == ControlCommand::RetryEntry {
                     boundary.reset_for_retry();
                 }
-                match discover(
+                match run_entry_attempt(
                     config,
                     credentials,
                     boundary,
@@ -170,14 +208,21 @@ fn run_worker_loop_for<F, C, E>(
                     entropy,
                     target,
                 ) {
-                    Ok(character) => {
-                        if character.is_none_or(|character| boundary.selected(character)) {
+                    Ok(outcome) => {
+                        let published = match outcome {
+                            EntryAttemptOutcome::CharacterSelected(character) => {
+                                boundary.selected(character)
+                            }
+                            EntryAttemptOutcome::RealmDiscovered
+                            | EntryAttemptOutcome::MovementReady => true,
+                        };
+                        if published {
                             boundary.disconnect();
                         }
                     }
                     Err(DiscoveryError::Failure(failure)) => {
                         boundary.fail(command.kind(), failure);
-                        if target == WorkerTarget::MovementReady {
+                        if target.supports_explicit_retry() {
                             movement_attempt_failed = true;
                             continue;
                         }
@@ -197,7 +242,7 @@ fn run_worker_loop_for<F, C, E>(
     }
 }
 
-fn discover<F, C, E>(
+fn run_entry_attempt<F, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
     boundary: &mut WorkerBoundary,
@@ -205,7 +250,7 @@ fn discover<F, C, E>(
     clock: &mut C,
     entropy: &mut E,
     target: WorkerTarget,
-) -> Result<Option<SelectedCharacter>, DiscoveryError>
+) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     F: TransportFactory,
     C: MonotonicClock,
@@ -213,20 +258,10 @@ where
 {
     check_cancelled(boundary)?;
     let started = clock.now();
-    let connection_count = if target == WorkerTarget::RealmDiscovery {
-        1
-    } else {
-        2
-    };
-    let io_count = match target {
-        WorkerTarget::RealmDiscovery => 4,
-        WorkerTarget::CharacterSelection => 8,
-        WorkerTarget::MovementReady => 64,
-    };
     let budget = config
         .connect_timeout()
-        .saturating_mul(connection_count)
-        .checked_add(config.io_timeout().saturating_mul(io_count))
+        .saturating_mul(target.connection_count())
+        .checked_add(config.io_timeout().saturating_mul(target.io_count()))
         .ok_or_else(timeout_failure)?;
     let deadline = started.checked_add(budget).ok_or_else(timeout_failure)?;
     let mut machine = EntryMachine::new();
@@ -263,11 +298,11 @@ where
     if !boundary.discovered(realm) {
         return Err(DiscoveryError::Boundary);
     }
-    if target == WorkerTarget::RealmDiscovery {
+    if target.stops_after_realm() {
         machine
             .complete_after_realm()
             .map_err(|_| internal_transition_failure())?;
-        return Ok(None);
+        return Ok(EntryAttemptOutcome::RealmDiscovered);
     }
 
     transition(
@@ -498,7 +533,7 @@ fn select_character<T, C, E>(
     deadline: Duration,
     session_key: &[u8; 40],
     target: WorkerTarget,
-) -> Result<Option<SelectedCharacter>, DiscoveryError>
+) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     T: LoginTransport,
     C: MonotonicClock,
@@ -603,11 +638,11 @@ where
         deadline,
         &mut server_stream,
     )?;
-    if target == WorkerTarget::CharacterSelection {
+    if target.stops_after_character() {
         machine
             .complete()
             .map_err(|_| internal_transition_failure())?;
-        return Ok(Some(selected));
+        return Ok(EntryAttemptOutcome::CharacterSelected(selected));
     }
     if !boundary.selected(selected.clone()) {
         return Err(DiscoveryError::Boundary);
@@ -639,7 +674,7 @@ where
         &mut client_stream,
         &selected,
     )?;
-    Ok(None)
+    Ok(EntryAttemptOutcome::MovementReady)
 }
 
 fn read_selected_character<T, C>(
@@ -1296,6 +1331,12 @@ fn map_protocol_failure(
             RecoveryAction::FixConfiguration,
         )),
         ProtocolError::UnsupportedMovementState => unsupported_self_control_failure(),
+        ProtocolError::MalformedWorldEntry { .. } => DiscoveryError::Failure(ClientFailure::new(
+            FailureCategory::ProtocolIncompatibility,
+            stage,
+            "Reference Realm world-entry packet was malformed",
+            recovery,
+        )),
         ProtocolError::MalformedFrame
         | ProtocolError::UnsupportedSecurity
         | ProtocolError::InvalidSrpParameters => DiscoveryError::Failure(ClientFailure::new(
@@ -1415,8 +1456,8 @@ mod tests {
     };
 
     use super::{
-        DiscoveryError, EntropySource, LoginTransport, MonotonicClock, TransportFactory,
-        WorkerTarget, discover, run_worker_loop, run_worker_loop_for,
+        DiscoveryError, EntropySource, EntryAttemptOutcome, LoginTransport, MonotonicClock,
+        TransportFactory, WorkerTarget, run_entry_attempt, run_worker_loop, run_worker_loop_for,
     };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
@@ -1614,7 +1655,15 @@ mod tests {
             movement_entry_script(&[(SMSG_LOGIN_VERIFY_WORLD, bad_pose)]),
             &config(),
         );
-        assert_failed_movement(&pose, FailureCategory::ProtocolIncompatibility);
+        assert_failed_movement(
+            &pose,
+            ExpectedMovementFailure {
+                category: FailureCategory::ProtocolIncompatibility,
+                stage: "world bootstrap",
+                context: "authoritative entry state did not corroborate the selected character",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            },
+        );
 
         let mut malformed = fixture("world-entry-self-update-compressed-body.hex");
         malformed.pop();
@@ -1628,7 +1677,10 @@ mod tests {
             ]),
             &config(),
         );
-        assert_failed_movement(&compressed, FailureCategory::ProtocolIncompatibility);
+        assert_failed_movement(
+            &compressed,
+            ExpectedMovementFailure::malformed("world bootstrap"),
+        );
 
         let unsupported = run_movement_scripted(
             movement_entry_script(&[
@@ -1644,7 +1696,15 @@ mod tests {
             ]),
             &config(),
         );
-        assert_failed_movement(&unsupported, FailureCategory::UnsupportedSelfControl);
+        assert_failed_movement(
+            &unsupported,
+            ExpectedMovementFailure {
+                category: FailureCategory::UnsupportedSelfControl,
+                stage: "world bootstrap",
+                context: "selected character entered an unsupported movement or control state",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            },
+        );
 
         let missing_flight = run_movement_scripted(
             movement_entry_script(&[
@@ -1663,7 +1723,139 @@ mod tests {
             ]),
             &config(),
         );
-        assert_failed_movement(&missing_flight, FailureCategory::Transport);
+        assert_failed_movement(
+            &missing_flight,
+            ExpectedMovementFailure {
+                category: FailureCategory::Transport,
+                stage: "control synchronization",
+                context: "world transport operation failed",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            },
+        );
+    }
+
+    #[test]
+    fn malformed_identity_speed_time_and_flight_boundaries_are_stable_and_redacted() {
+        let mut truncated_location = fixture("world-entry-login-verify-body.hex");
+        truncated_location.pop();
+        let location = run_movement_scripted(
+            movement_entry_script(&[(SMSG_LOGIN_VERIFY_WORLD, truncated_location)]),
+            &config(),
+        );
+        assert_failed_movement(
+            &location,
+            ExpectedMovementFailure::malformed("world bootstrap"),
+        );
+
+        let mut mismatched_self = fixture("world-entry-self-update-body.hex");
+        mismatched_self[6] = 0x35;
+        let identity = run_movement_scripted(
+            movement_entry_script(&[
+                (
+                    SMSG_LOGIN_VERIFY_WORLD,
+                    fixture("world-entry-login-verify-body.hex"),
+                ),
+                (SMSG_UPDATE_OBJECT, mismatched_self),
+            ]),
+            &config(),
+        );
+        assert_failed_movement(
+            &identity,
+            ExpectedMovementFailure::malformed("world bootstrap"),
+        );
+
+        let absent_self = run_movement_scripted(
+            movement_entry_script(&[
+                (
+                    SMSG_LOGIN_VERIFY_WORLD,
+                    fixture("world-entry-login-verify-body.hex"),
+                ),
+                (SMSG_UPDATE_OBJECT, 0_u32.to_le_bytes().to_vec()),
+            ]),
+            &config(),
+        );
+        assert_failed_movement(
+            &absent_self,
+            ExpectedMovementFailure {
+                category: FailureCategory::Transport,
+                stage: "world bootstrap",
+                context: "world transport operation failed",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            },
+        );
+
+        let mut malformed_speed = fixture("world-entry-force-run-body.hex");
+        malformed_speed[7] = 1;
+        let speed = run_movement_scripted(
+            synchronized_entry_script(&[(SMSG_FORCE_RUN_SPEED_CHANGE, malformed_speed)]),
+            &config(),
+        );
+        assert_failed_movement(
+            &speed,
+            ExpectedMovementFailure::malformed("control synchronization"),
+        );
+
+        let time = run_movement_scripted(
+            synchronized_entry_script(&[(SMSG_TIME_SYNC_REQ, vec![1, 2, 3])]),
+            &config(),
+        );
+        assert_failed_movement(
+            &time,
+            ExpectedMovementFailure::malformed("control synchronization"),
+        );
+
+        let flight = run_movement_scripted(
+            synchronized_entry_script(&[(SMSG_MOVE_UNSET_CAN_FLY, vec![1, 2, 3])]),
+            &config(),
+        );
+        assert_failed_movement(
+            &flight,
+            ExpectedMovementFailure::malformed("control synchronization"),
+        );
+    }
+
+    #[test]
+    fn synchronization_timeout_and_every_control_write_fault_fail_closed() {
+        let timeout = run_faulted_movement(
+            synchronized_entry_script(&[]),
+            Some(io::ErrorKind::TimedOut),
+            None,
+        );
+        assert_failed_movement(
+            &timeout,
+            ExpectedMovementFailure {
+                category: FailureCategory::Timeout,
+                stage: "control synchronization",
+                context: "world transport operation timed out",
+                recovery: crate::RecoveryAction::RetryExplicitly,
+            },
+        );
+
+        for frames in [
+            vec![(
+                SMSG_FORCE_RUN_SPEED_CHANGE,
+                fixture("world-entry-force-run-body.hex"),
+            )],
+            vec![(
+                SMSG_TIME_SYNC_REQ,
+                fixture("world-entry-time-sync-request-body.hex"),
+            )],
+            vec![(
+                SMSG_MOVE_UNSET_CAN_FLY,
+                fixture("world-entry-unset-can-fly-body.hex"),
+            )],
+        ] {
+            let write = run_faulted_movement(synchronized_entry_script(&frames), None, Some(4));
+            assert_failed_movement(
+                &write,
+                ExpectedMovementFailure {
+                    category: FailureCategory::Transport,
+                    stage: "control synchronization",
+                    context: "world transport operation failed",
+                    recovery: crate::RecoveryAction::CheckReferenceRealm,
+                },
+            );
+        }
     }
 
     #[test]
@@ -2256,6 +2448,21 @@ mod tests {
         world_script(&frames)
     }
 
+    fn synchronized_entry_script(sync_frames: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut frames = vec![
+            (
+                SMSG_LOGIN_VERIFY_WORLD,
+                fixture("world-entry-login-verify-body.hex"),
+            ),
+            (
+                SMSG_UPDATE_OBJECT,
+                fixture("world-entry-self-update-body.hex"),
+            ),
+        ];
+        frames.extend_from_slice(sync_frames);
+        movement_entry_script(&frames)
+    }
+
     fn world_script(frames: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let session_key = login_session_key();
         let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, &session_key);
@@ -2408,21 +2615,93 @@ mod tests {
         assert_eq!(actual.to_bits(), expected.to_bits());
     }
 
-    fn assert_failed_movement(run: &MovementScriptedRun, category: FailureCategory) {
+    #[derive(Clone, Copy)]
+    struct ExpectedMovementFailure {
+        category: FailureCategory,
+        stage: &'static str,
+        context: &'static str,
+        recovery: crate::RecoveryAction,
+    }
+
+    impl ExpectedMovementFailure {
+        const fn malformed(stage: &'static str) -> Self {
+            Self {
+                category: FailureCategory::ProtocolIncompatibility,
+                stage,
+                context: "Reference Realm world-entry packet was malformed",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            }
+        }
+    }
+
+    fn assert_failed_movement(run: &MovementScriptedRun, expected: ExpectedMovementFailure) {
         assert!(matches!(run.snapshot.phase, ClientPhase::Failed(_)));
+        let failure = run.snapshot.latest_failure.as_ref().unwrap();
         assert_eq!(
-            run.snapshot.latest_failure.as_ref().unwrap().category(),
-            category
+            (
+                failure.category(),
+                failure.stage(),
+                failure.context(),
+                failure.recommended_recovery()
+            ),
+            (
+                expected.category,
+                expected.stage,
+                expected.context,
+                expected.recovery
+            )
         );
         assert!(run.snapshot.run_speed.is_none());
+        assert_eq!(run.snapshot.queue_counters.movement_revision, 1);
+        assert!(
+            run.snapshot
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message() == expected.context)
+        );
+        assert_eq!(
+            run.events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    ClientEventKind::CommandRejected {
+                        command: crate::CommandKind::StartEntry,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            run.events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::Entering(crate::EntryStage::LoginConnection)
+                    }
+                ))
+                .count(),
+            1
+        );
         assert!(!run.events.iter().any(|event| matches!(
             event.kind,
-            ClientEventKind::PhaseChanged {
-                phase: ClientPhase::MovementReady
-            }
+            ClientEventKind::MovementSubmitted { .. }
+                | ClientEventKind::PhaseChanged {
+                    phase: ClientPhase::MovementReady
+                }
         )));
         assert!(run.login_states[0].closed.load(Ordering::Acquire));
         assert!(run.world_states[0].closed.load(Ordering::Acquire));
+        assert_eq!(run.login_states.len(), 1);
+        assert_eq!(run.world_states.len(), 1);
+        let formatted = format!("{:?} {:?}", run.snapshot, run.events);
+        assert!(!formatted.contains("ONLYFORVECTOR"));
+        assert!(!formatted.contains("session_key"));
+        assert!(matches!(
+            run.events.last().map(|event| &event.kind),
+            Some(ClientEventKind::Disconnected)
+        ));
     }
 
     fn run_movement_scripted(
@@ -2433,7 +2712,7 @@ mod tests {
         let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
         client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
         let mut factory = RetryScriptFactory::new([world_reads]);
-        match discover(
+        match run_entry_attempt(
             config,
             &credentials,
             &mut boundary,
@@ -2442,9 +2721,13 @@ mod tests {
             &mut FixedEntropy::success(PRIVATE_EPHEMERAL),
             WorkerTarget::MovementReady,
         ) {
-            Ok(character) => {
-                assert!(character.is_none());
+            Ok(EntryAttemptOutcome::MovementReady) => {
                 boundary.disconnect();
+            }
+            Ok(
+                EntryAttemptOutcome::RealmDiscovered | EntryAttemptOutcome::CharacterSelected(_),
+            ) => {
+                panic!("scripted movement attempt stopped at the wrong capability boundary");
             }
             Err(DiscoveryError::Failure(failure)) => {
                 boundary.fail(crate::CommandKind::StartEntry, failure);
@@ -2459,6 +2742,49 @@ mod tests {
             events: client.drain_events(),
             login_states: factory.login_states,
             world_states: factory.world_states,
+        }
+    }
+
+    fn run_faulted_movement(
+        world_reads: Vec<u8>,
+        world_read_error_at_eof: Option<io::ErrorKind>,
+        fail_world_write_call: Option<usize>,
+    ) -> MovementScriptedRun {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
+        let login_state = ScriptState::default();
+        let world_state = ScriptState::default();
+        let mut factory = FaultingEntryFactory {
+            world_reads: Some(world_reads),
+            world_read_error_at_eof,
+            fail_world_write_call,
+            login_state: login_state.clone(),
+            world_state: world_state.clone(),
+        };
+        match run_entry_attempt(
+            &config,
+            &credentials,
+            &mut boundary,
+            &mut factory,
+            &mut FixedClock::default(),
+            &mut FixedEntropy::success(PRIVATE_EPHEMERAL),
+            WorkerTarget::MovementReady,
+        ) {
+            Err(DiscoveryError::Failure(failure)) => {
+                boundary.fail(crate::CommandKind::StartEntry, failure);
+            }
+            Ok(_) | Err(DiscoveryError::Cancelled | DiscoveryError::Boundary) => {
+                panic!("faulted movement attempt did not fail semantically");
+            }
+        }
+        boundary.mark_stopped();
+        MovementScriptedRun {
+            snapshot: client.snapshot(),
+            events: client.drain_events(),
+            login_states: vec![login_state],
+            world_states: vec![world_state],
         }
     }
 
@@ -2770,6 +3096,82 @@ mod tests {
     }
 
     impl LoginTransport for CancellingScriptTransport {
+        fn close(&mut self) -> io::Result<()> {
+            self.state.closed.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    struct FaultingEntryFactory {
+        world_reads: Option<Vec<u8>>,
+        world_read_error_at_eof: Option<io::ErrorKind>,
+        fail_world_write_call: Option<usize>,
+        login_state: ScriptState,
+        world_state: ScriptState,
+    }
+
+    impl TransportFactory for FaultingEntryFactory {
+        type Transport = FaultingScriptTransport;
+
+        fn connect_login(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            self.login_state.connections.fetch_add(1, Ordering::AcqRel);
+            Ok(FaultingScriptTransport {
+                reads: Cursor::new(success_script()),
+                read_error_at_eof: None,
+                fail_write_call: None,
+                write_calls: 0,
+                state: self.login_state.clone(),
+            })
+        }
+
+        fn connect_world(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            self.world_state.connections.fetch_add(1, Ordering::AcqRel);
+            Ok(FaultingScriptTransport {
+                reads: Cursor::new(self.world_reads.take().unwrap_or_default()),
+                read_error_at_eof: self.world_read_error_at_eof,
+                fail_write_call: self.fail_world_write_call,
+                write_calls: 0,
+                state: self.world_state.clone(),
+            })
+        }
+    }
+
+    struct FaultingScriptTransport {
+        reads: Cursor<Vec<u8>>,
+        read_error_at_eof: Option<io::ErrorKind>,
+        fail_write_call: Option<usize>,
+        write_calls: usize,
+        state: ScriptState,
+    }
+
+    impl Read for FaultingScriptTransport {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.reads.read(buffer)?;
+            if count == 0
+                && let Some(kind) = self.read_error_at_eof
+            {
+                return Err(io::Error::from(kind));
+            }
+            Ok(count)
+        }
+    }
+
+    impl Write for FaultingScriptTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.write_calls = self.write_calls.saturating_add(1);
+            if self.fail_write_call == Some(self.write_calls) {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            self.state.writes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for FaultingScriptTransport {
         fn close(&mut self) -> io::Result<()> {
             self.state.closed.store(true, Ordering::Release);
             Ok(())
