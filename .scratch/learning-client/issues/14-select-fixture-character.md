@@ -1,7 +1,7 @@
 # Select Miaztest through an Authenticated World Session
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Discover the Reference Realm through Authenticated Login](13-discover-reference-realm.md)
 
 ## Parent
@@ -21,17 +21,17 @@ Implement the world challenge and session proof for build 12340, independent inb
 
 ## Acceptance criteria
 
-- [ ] The production world session performs challenge and exact build-12340 authentication after fresh login/realm discovery.
-- [ ] Independent inbound and outbound header-cipher state remains aligned across multiple fragmented and coalesced packets.
-- [ ] Unknown opcodes are skipped only as safe, complete frames without desynchronizing the stream.
-- [ ] Character enumeration consumes complete records and selects exactly one configured character named `Miaztest`.
-- [ ] The semantic session state reaches `Entering(CharacterSelection)` without exposing generated protocol types.
-- [ ] Deterministic scenarios cover cipher drift, malformed headers, world-auth rejection, absent or duplicate configured character, timeout, EOF, cancellation, clean shutdown, and redacted diagnostics.
-- [ ] The live integration performs login, realm discovery, fresh world authentication, and exact character selection, then disconnects before sending `CMSG_PLAYER_LOGIN`.
-- [ ] Live nonexistent-account and absent-character probes produce the accepted stable failure categories without leaking secrets.
-- [ ] The offline application and all predecessor behavior remain green.
-- [ ] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
-- [ ] The exit evidence, remaining deferrals, and exact passing commit are recorded.
+- [x] The production world session performs challenge and exact build-12340 authentication after fresh login/realm discovery.
+- [x] Independent inbound and outbound header-cipher state remains aligned across multiple fragmented and coalesced packets.
+- [x] Unknown opcodes are skipped only as safe, complete frames without desynchronizing the stream.
+- [x] Character enumeration consumes complete records and selects exactly one configured character named `Miaztest`.
+- [x] The semantic session state reaches `Entering(CharacterSelection)` without exposing generated protocol types.
+- [x] Deterministic scenarios cover cipher drift, malformed headers, world-auth rejection, absent or duplicate configured character, timeout, EOF, cancellation, clean shutdown, and redacted diagnostics.
+- [x] The live integration performs login, realm discovery, fresh world authentication, and exact character selection, then disconnects before sending `CMSG_PLAYER_LOGIN`.
+- [x] Live nonexistent-account and absent-character probes produce the accepted stable failure categories without leaking secrets.
+- [x] The offline application and all predecessor behavior remain green.
+- [x] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
+- [x] The exit evidence, remaining deferrals, and exact passing commit are recorded.
 
 ## Explicit deferrals
 
@@ -47,3 +47,9 @@ Implement the world challenge and session proof for build 12340, independent inb
 - Keep the Windows compile tripwire green without claiming Windows runtime acceptance.
 - Keep protocol incompatibilities and generated types contained inside `client_protocol`; do not fork dependencies.
 - Work and verify this ticket on one candidate, then run `/code-review` and commit before advancing the frontier.
+
+## Answer
+
+Implemented authenticated build-12340 world-session negotiation, independent encrypted header streams, bounded complete-frame handling, full character enumeration, and exact configured-character selection in the engine-free production path. The worker now exposes sanitized `RealmDiscovered` and `CharacterSelected` semantics, then disconnects before player login; the visible Bevy application remains explicitly offline.
+
+Independent fixtures, deterministic fault scenarios, fresh-state live success and negative probes, all routine native/Windows checks, and the Metal proof pass on exact candidate `08472c59de9f6a23bc8d9bf54b5f32877d8e3bad`. Full evidence and remaining deferrals are recorded in [Slice 14 exit-gate evidence](../research/slice-14-exit-gate.md).

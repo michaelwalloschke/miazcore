@@ -46,6 +46,7 @@ None.
 
 - [Render the Offline Diagnostic World from the Production Scaffold](issues/12-render-offline-diagnostic-world.md) — The first production slice establishes the exact four-crate Rust/Bevy workspace, immutable and secret-safe offline session boundary, viewport-first Diagnostic World, routine native/Windows gates, and a hashed Metal proof without making a network claim.
 - [Discover the Reference Realm through Authenticated Login](issues/13-discover-reference-realm.md) — The second production slice adds independently vectored build-12340 login/SRP6 codecs and a cancellable headless worker that authenticates, verifies the exact Reference Realm and advertised world endpoint through the final redacted boundary, then disconnects while the Bevy client remains offline.
+- [Select Miaztest through an Authenticated World Session](issues/14-select-fixture-character.md) — The third production slice adds independent build-12340 world-auth/character fixtures, stateful directional encrypted-header framing, a fresh headless world session, complete safe opcode consumption, and exact `Miaztest` selection before a clean pre-player-login disconnect; live stable negative probes and the offline Bevy boundary remain intact.
 
 ## Out of scope
 
