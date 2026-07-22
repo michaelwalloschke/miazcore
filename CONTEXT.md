@@ -12,6 +12,14 @@ _Avoid_: WoW client replacement, multiplayer client
 The first end-to-end learning outcome against a real, locally controlled AzerothCore realm: enter a world, render a minimal placeholder environment, and move the controlled character in a way the realm recognizes.
 _Avoid_: multiplayer slice, full client
 
+**World-entry Acceptance**:
+The aggregate decision that the World-entry Slice has passed its deterministic core, Bevy/platform, live Reference Realm, and manual macOS gates. No individual gate or evidence artifact substitutes for the other three.
+_Avoid_: end-to-end test, smoke test, demo success
+
+**Acceptance Evidence Bundle**:
+The curated, redacted record tying World-entry Acceptance to one exact clean Git commit and its four verification gates. It contains reproducible summaries and selected artifacts, not raw authenticated traffic or unrestricted runtime logs.
+_Avoid_: log dump, CI artifact, screenshot proof
+
 **Reference Realm**:
 The locally controlled AzerothCore instance that acts as the Learning Client's compatibility target. Its source code is an external dependency and is not owned by this repository.
 _Avoid_: embedded server, server fork

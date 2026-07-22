@@ -1,7 +1,7 @@
 # Chart the AzerothCore-backed Learning Client
 
 Type: wayfinder:map
-Status: open
+Status: resolved
 
 ## Destination
 
@@ -35,11 +35,12 @@ The route is clear when the engine boundary, protocol/session path, local realm 
 - [Decide the minimal networked movement contract](issues/06-decide-networked-movement-contract.md) — Predict heading-aligned planar movement at 60 Hz inside a five-metre envelope, submit start/10 Hz heartbeat/stop frames without inventing ACKs, halt on transmission failure, and prove realm recognition only by a saving reconnect within 0.25 m.
 - [Prove the Bevy shell and platform test path](issues/11-prove-bevy-shell-platform-path.md) — Rust 1.97.1 plus Bevy 0.19.0 `3d`/`ui` passes a real Apple Silicon Metal primitive-shell proof, engine-free `MinimalPlugins` tests, and a macOS-to-MSVC all-target compile check with a documented BLAKE3/Clang workaround; real Windows build/test/render evidence remains a later gate.
 - [Design the engine-independent Learning Client architecture](issues/07-design-client-architecture.md) — Use project-owned protocol types beneath a dedicated deterministic session thread with bounded semantic queues and private test ports, while a thin ordered Bevy plugin group owns only input, interpolation, placeholder presentation, camera, and redacted diagnostics.
+- [Specify the World-entry verification contract](issues/08-specify-verification-contract.md) — Require one clean candidate to pass deterministic protocol/session matrices, automated Bevy/platform checks, an isolated real-realm Movement Proof, and manual Metal interaction, then retain one hashed and redacted evidence bundle without hidden retries.
+- [Define the implementation slices and scope gates](issues/09-define-implementation-slices.md) — Build eight cumulative capability slices from an offline production scaffold through real entry, movement, Movement Proof, and four-gate acceptance, admitting only requirements that block the active exit gate and branching Windows/gameplay/multiplayer afterward.
 
 ## Not yet specified
 
-- The exact failure fixtures and evidence artifacts required by the verification contract.
-- The detailed implementation sequence and the points at which later portability or gameplay work should branch from the initial slice.
+None.
 
 ## Out of scope
 
