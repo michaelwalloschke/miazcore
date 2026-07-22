@@ -1,6 +1,6 @@
-use std::{error::Error, fmt, io, io::Read};
+use std::io::Read;
 
-use crate::TARGET_CLIENT_BUILD;
+use crate::{ProtocolError, TARGET_CLIENT_BUILD};
 
 const MAX_REALM_PAYLOAD: usize = u16::MAX as usize;
 const MAX_REALMS: usize = 128;
@@ -9,52 +9,6 @@ const WRATH_SRP_PRIME: [u8; 32] = [
     0xb7, 0x9b, 0x3e, 0x2a, 0x87, 0x82, 0x3c, 0xab, 0x8f, 0x5e, 0xbf, 0xbf, 0x8e, 0xb1, 0x01, 0x08,
     0x53, 0x50, 0x06, 0x29, 0x8b, 0x5b, 0xad, 0xbd, 0x5b, 0x53, 0xe1, 0x89, 0x5e, 0x64, 0x4b, 0x89,
 ];
-
-/// Stable failure surface for build-12340 login framing and SRP validation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProtocolError {
-    Io(io::ErrorKind),
-    InvalidCredentialEncoding,
-    MalformedFrame,
-    MalformedWorldEntry { opcode: u16, byte_offset: usize },
-    UnsupportedMovementState,
-    UnsupportedSecurity,
-    InvalidSrpParameters,
-}
-
-impl fmt::Display for ProtocolError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(_) => formatter.write_str("login transport read or write failed"),
-            Self::InvalidCredentialEncoding => {
-                formatter.write_str("login credential encoding is unsupported")
-            }
-            Self::MalformedFrame => formatter.write_str("login frame is malformed"),
-            Self::MalformedWorldEntry {
-                opcode,
-                byte_offset,
-            } => write!(
-                formatter,
-                "world-entry opcode {opcode:#06x} is malformed at byte offset {byte_offset}"
-            ),
-            Self::UnsupportedMovementState => {
-                formatter.write_str("world movement state is outside the controlled capability")
-            }
-            Self::UnsupportedSecurity => {
-                formatter.write_str("login server requested an unsupported security method")
-            }
-            Self::InvalidSrpParameters => formatter.write_str("SRP6 parameters are invalid"),
-        }
-    }
-}
-
-impl Error for ProtocolError {}
-
-impl From<io::Error> for ProtocolError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error.kind())
-    }
-}
 
 /// Public SRP values returned by an accepted login challenge.
 #[derive(Clone, Debug, Eq, PartialEq)]

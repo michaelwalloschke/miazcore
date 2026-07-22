@@ -110,7 +110,7 @@ pub(crate) fn spawn_production_worker(
     target: WorkerTarget,
 ) -> Result<JoinHandle<()>, BoundaryError> {
     thread::Builder::new()
-        .name("miazcore-realm-discovery".to_owned())
+        .name("miazcore-entry-worker".to_owned())
         .spawn(move || {
             let (config, mut credentials) = loaded.into_parts();
             credentials.normalize_for_login();
@@ -1815,7 +1815,33 @@ mod tests {
     }
 
     #[test]
-    fn synchronization_timeout_and_every_control_write_fault_fail_closed() {
+    fn bootstrap_and_synchronization_timeouts_and_write_faults_fail_closed() {
+        let bootstrap_timeout = run_faulted_movement(
+            movement_entry_script(&[]),
+            Some(io::ErrorKind::TimedOut),
+            None,
+        );
+        assert_failed_movement(
+            &bootstrap_timeout,
+            ExpectedMovementFailure {
+                category: FailureCategory::Timeout,
+                stage: "world bootstrap",
+                context: "world transport operation timed out",
+                recovery: crate::RecoveryAction::RetryExplicitly,
+            },
+        );
+
+        let player_login_write = run_faulted_movement(movement_entry_script(&[]), None, Some(3));
+        assert_failed_movement(
+            &player_login_write,
+            ExpectedMovementFailure {
+                category: FailureCategory::Transport,
+                stage: "world bootstrap",
+                context: "world transport operation failed",
+                recovery: crate::RecoveryAction::CheckReferenceRealm,
+            },
+        );
+
         let timeout = run_faulted_movement(
             synchronized_entry_script(&[]),
             Some(io::ErrorKind::TimedOut),

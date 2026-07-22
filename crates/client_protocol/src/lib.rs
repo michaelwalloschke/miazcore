@@ -4,17 +4,18 @@
 //! build-12340 Reference Realm. It deliberately owns no socket, runtime, engine,
 //! or application-boundary types.
 
+mod error;
 mod header_crypto;
 mod login;
 mod srp;
 mod world;
 mod world_entry;
 
+pub use error::ProtocolError;
 pub use header_crypto::{HeaderCipher, HeaderDirection};
 pub use login::{
-    LoginChallenge, LoginChallengeResponse, LoginProofResponse, ProtocolError, RealmEntry,
-    encode_logon_challenge, read_logon_challenge_response, read_logon_proof_response,
-    read_realm_list_response,
+    LoginChallenge, LoginChallengeResponse, LoginProofResponse, RealmEntry, encode_logon_challenge,
+    read_logon_challenge_response, read_logon_proof_response, read_realm_list_response,
 };
 pub use srp::{ClientSrpProof, SessionKey, calculate_srp_client_proof};
 pub use world::{
