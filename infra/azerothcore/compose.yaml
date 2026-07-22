@@ -1,0 +1,167 @@
+name: ${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}
+
+x-labels: &labels
+  com.miazcore.reference-realm: "true"
+
+x-acore-environment: &acore-environment
+  MIAZCORE_DATABASE_HOST: database
+  MIAZCORE_DATABASE_USER: acore
+  AC_UPDATES_ENABLE_DATABASES: "0"
+  AC_DATABASES_CLOSE_IDLE_CONNECTIONS: "0"
+
+services:
+  database:
+    image: mysql:8.4@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+    labels: *labels
+    environment:
+      MYSQL_DATABASE: acore_auth
+      MYSQL_USER: acore
+      MYSQL_PASSWORD_FILE: /run/secrets/database_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/database_root_password
+    secrets:
+      - database_password
+      - database_root_password
+    volumes:
+      - database-data:/var/lib/mysql
+      - ./container/init-databases.sql:/docker-entrypoint-initdb.d/20-miazcore-databases.sql:ro
+    networks: [realm]
+    healthcheck:
+      test: [CMD-SHELL, "export MYSQL_PWD=$$(cat /run/secrets/database_root_password); mysqladmin ping --host=127.0.0.1 --user=root --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 60
+      start_period: 15s
+    restart: unless-stopped
+
+  client-data:
+    image: acore/ac-wotlk-client-data:17.0.0-dev@sha256:bc9dc009addafcb57f5a25787e85e7bf8c77571f813fe97e1f555ebe63d71dcc
+    platform: linux/amd64
+    labels: *labels
+    entrypoint: [bash, /miazcore/verify-client-data.sh]
+    volumes:
+      - server-data:/azerothcore/env/dist/data
+      - ./container/verify-client-data.sh:/miazcore/verify-client-data.sh:ro
+    networks: [realm]
+    restart: "no"
+
+  db-import:
+    image: acore/ac-wotlk-db-import:17.0.0-dev@sha256:a44c9e1f6cf491ef6ff728a1e433fa0acf09e339d6436a3f0dc7fe2bc74b7dbd
+    platform: linux/amd64
+    labels: *labels
+    environment:
+      <<: *acore-environment
+      AC_UPDATES_ENABLE_DATABASES: "7"
+    secrets: [database_password]
+    volumes:
+      - ./container/with-secrets.sh:/miazcore/with-secrets.sh:ro
+    tmpfs:
+      - /azerothcore/env/dist/etc:uid=1000,gid=1000,mode=0700
+      - /azerothcore/env/dist/logs:uid=1000,gid=1000,mode=0700
+    command: [/miazcore/with-secrets.sh, /azerothcore/env/dist/bin/dbimport]
+    depends_on:
+      database: {condition: service_healthy}
+    networks: [realm]
+    restart: "no"
+
+  fixture-provisioner:
+    image: acore/ac-wotlk-worldserver:17.0.0-dev@sha256:0a601595920e19c4af10679e4c01ac10f60569fc1e737db54aa6a5a07efb2455
+    platform: linux/amd64
+    labels: *labels
+    environment:
+      <<: *acore-environment
+      MIAZCORE_REALM_ADDRESS: ${MIAZCORE_REALM_ADDRESS:-127.0.0.1}
+      AC_DATA_DIR: /azerothcore/env/dist/data
+      AC_CONSOLE_ENABLE: "1"
+      AC_WARDEN_ENABLED: "0"
+    secrets: [database_password, fixture_account, fixture_password]
+    volumes:
+      - server-data:/azerothcore/env/dist/data:ro
+      - ./container/with-secrets.sh:/miazcore/with-secrets.sh:ro
+      - ./container/provision.sh:/miazcore/provision.sh:ro
+      - ./fixtures:/miazcore/fixtures:ro
+    tmpfs:
+      - /azerothcore/env/dist/etc:uid=1000,gid=1000,mode=0700
+      - /azerothcore/env/dist/logs:uid=1000,gid=1000,mode=0700
+      - /run/miazcore:uid=1000,gid=1000,mode=0700
+    command: [/miazcore/with-secrets.sh, /miazcore/provision.sh]
+    depends_on:
+      database: {condition: service_healthy}
+      client-data: {condition: service_completed_successfully}
+      db-import: {condition: service_completed_successfully}
+    networks: [realm]
+    restart: "no"
+
+  authserver:
+    image: acore/ac-wotlk-authserver:17.0.0-dev@sha256:d5b017e40d256c7ce7bd16ad3a1127c985347431110243876048c48630a72492
+    platform: linux/amd64
+    labels: *labels
+    environment:
+      <<: *acore-environment
+      AC_STRICT_VERSION_CHECK: "0"
+    secrets: [database_password]
+    volumes:
+      - ./container/with-secrets.sh:/miazcore/with-secrets.sh:ro
+    tmpfs:
+      - /azerothcore/env/dist/etc:uid=1000,gid=1000,mode=0700
+      - /azerothcore/env/dist/logs:uid=1000,gid=1000,mode=0700
+    command: [/miazcore/with-secrets.sh, /azerothcore/env/dist/bin/authserver]
+    depends_on:
+      fixture-provisioner: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:3724:3724"]
+    networks: [realm]
+    healthcheck:
+      test: [CMD-SHELL, "timeout 3 bash -c '</dev/tcp/127.0.0.1/3724'"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  worldserver:
+    image: acore/ac-wotlk-worldserver:17.0.0-dev@sha256:0a601595920e19c4af10679e4c01ac10f60569fc1e737db54aa6a5a07efb2455
+    platform: linux/amd64
+    labels: *labels
+    environment:
+      <<: *acore-environment
+      AC_DATA_DIR: /azerothcore/env/dist/data
+      AC_CONSOLE_ENABLE: "0"
+      AC_WARDEN_ENABLED: "0"
+    secrets: [database_password]
+    volumes:
+      - server-data:/azerothcore/env/dist/data:ro
+      - ./container/with-secrets.sh:/miazcore/with-secrets.sh:ro
+    tmpfs:
+      - /azerothcore/env/dist/etc:uid=1000,gid=1000,mode=0700
+      - /azerothcore/env/dist/logs:uid=1000,gid=1000,mode=0700
+    command: [/miazcore/with-secrets.sh, /azerothcore/env/dist/bin/worldserver]
+    depends_on:
+      fixture-provisioner: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:8085:8085"]
+    networks: [realm]
+    healthcheck:
+      test: [CMD-SHELL, "timeout 3 bash -c '</dev/tcp/127.0.0.1/8085'"]
+      interval: 5s
+      timeout: 4s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  realm:
+    labels: *labels
+
+volumes:
+  database-data:
+    labels:
+      <<: *labels
+      com.miazcore.reference-realm.kind: state
+  server-data:
+    labels:
+      <<: *labels
+      com.miazcore.reference-realm.kind: server-data
+
+secrets:
+  database_password: {file: ./secrets/database-password}
+  database_root_password: {file: ./secrets/database-root-password}
+  fixture_account: {file: ./secrets/fixture-account}
+  fixture_password: {file: ./secrets/fixture-password}

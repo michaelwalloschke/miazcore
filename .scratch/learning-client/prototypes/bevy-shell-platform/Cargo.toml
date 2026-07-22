@@ -1,0 +1,20 @@
+[package]
+name = "bevy-shell-platform-proof"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy = { version = "=0.19.0", default-features = false, features = ["3d", "ui"] }
+
+# Bevy's asset stack uses BLAKE3. The pure-Rust feature avoids requiring the
+# Microsoft ml64 assembler when this target is checked from macOS.
+[target.'cfg(target_os = "windows")'.dependencies]
+blake3 = { version = "=1.8.5", features = ["pure"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

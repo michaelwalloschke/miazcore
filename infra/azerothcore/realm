@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+compose=(docker compose --project-directory "$base_dir" --file "$base_dir/compose.yaml")
+
+if [[ -f "$base_dir/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$base_dir/.env"
+    set +a
+fi
+project="${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}"
+compose+=(--project-name "$project")
+
+usage() {
+    echo "usage: $0 {init-secrets|up|down|health|smoke|reset-state|reset-all} [--yes]" >&2
+    exit 64
+}
+
+require_secrets() {
+    local name
+    for name in database-password database-root-password fixture-account fixture-password; do
+        [[ -s "$base_dir/secrets/$name" ]] || { echo "missing $base_dir/secrets/$name; run '$0 init-secrets'" >&2; exit 64; }
+    done
+}
+
+init_secrets() {
+    umask 077
+    mkdir -p "$base_dir/secrets"
+    [[ -e "$base_dir/secrets/database-password" ]] || openssl rand -hex 24 >"$base_dir/secrets/database-password"
+    [[ -e "$base_dir/secrets/database-root-password" ]] || openssl rand -hex 24 >"$base_dir/secrets/database-root-password"
+    [[ -e "$base_dir/secrets/fixture-account" ]] || printf 'MIAZTEST\n' >"$base_dir/secrets/fixture-account"
+    [[ -e "$base_dir/secrets/fixture-password" ]] || openssl rand -hex 8 >"$base_dir/secrets/fixture-password"
+    chmod 600 "$base_dir"/secrets/{database-password,database-root-password,fixture-account,fixture-password}
+    echo "created or retained four ignored secret files"
+}
+
+assert_labeled_volume() {
+    local volume="$1" expected_kind="$2" actual_label actual_kind
+    actual_label="$(docker volume inspect --format '{{ index .Labels "com.miazcore.reference-realm" }}' "$volume")"
+    actual_kind="$(docker volume inspect --format '{{ index .Labels "com.miazcore.reference-realm.kind" }}' "$volume")"
+    [[ "$actual_label" == true && "$actual_kind" == "$expected_kind" ]] || {
+        echo "refusing to remove unlabeled or mismatched volume: $volume" >&2
+        exit 65
+    }
+}
+
+reset() {
+    local include_data="$1" confirmed="${2:-}"
+    local state_volume="${project}_database-data" data_volume="${project}_server-data"
+    echo "reset target: $state_volume"
+    [[ "$include_data" == true ]] && echo "reset target: $data_volume"
+    if [[ "$confirmed" != --yes ]]; then
+        read -r -p "Remove only the listed labeled volumes? [y/N] " answer
+        [[ "$answer" == y || "$answer" == Y ]] || { echo "reset cancelled"; exit 0; }
+    fi
+    "${compose[@]}" down --remove-orphans
+    if docker volume inspect "$state_volume" >/dev/null 2>&1; then
+        assert_labeled_volume "$state_volume" state
+        docker volume rm "$state_volume"
+    fi
+    if [[ "$include_data" == true ]] && docker volume inspect "$data_volume" >/dev/null 2>&1; then
+        assert_labeled_volume "$data_volume" server-data
+        docker volume rm "$data_volume"
+    fi
+    "$0" up
+}
+
+case "${1:-}" in
+    init-secrets) init_secrets ;;
+    up)
+        require_secrets
+        "${compose[@]}" config --quiet
+        "${compose[@]}" pull
+        "${compose[@]}" up --detach --wait --wait-timeout 900
+        # One-shot import/provision work may recreate or restart MySQL while an
+        # existing server container remains up. Always finish with fresh server
+        # processes so their pools and realm cache target the current database.
+        "${compose[@]}" up --detach --wait --wait-timeout 180 --force-recreate --no-deps authserver worldserver
+        "$0" health
+        ;;
+    down) "${compose[@]}" down --remove-orphans ;;
+    health)
+        require_secrets
+        "${compose[@]}" ps --all
+        for port in 3724 8085; do
+            timeout_seconds=5
+            python3 - "$port" "$timeout_seconds" <<'PY'
+import socket, sys
+port, timeout = int(sys.argv[1]), float(sys.argv[2])
+with socket.create_connection(("127.0.0.1", port), timeout):
+    print(f"host socket: 127.0.0.1:{port} reachable")
+PY
+        done
+        "${compose[@]}" exec -T --env "MIAZCORE_EXPECTED_REALM_ADDRESS=${MIAZCORE_REALM_ADDRESS:-127.0.0.1}" database bash -ceu '
+          export MYSQL_PWD="$(cat /run/secrets/database_root_password)"
+          mysql_base=(mysql --user=root --batch --skip-column-names)
+          realm_count="$("${mysql_base[@]}" acore_auth --execute="
+            SELECT COUNT(*) FROM realmlist
+            WHERE id=1 AND name=\"Miazcore Reference Realm\" AND address=\"$MIAZCORE_EXPECTED_REALM_ADDRESS\"
+              AND port=8085 AND gamebuild=12340;")"
+          account_id="$("${mysql_base[@]}" acore_auth --execute="
+            SELECT id FROM account
+            WHERE username=\"MIAZTEST\" AND expansion=2 AND locked=0 AND lock_country=\"00\"
+              AND (totp_secret IS NULL OR totp_secret=\"\");")"
+          character_count="$("${mysql_base[@]}" acore_characters --execute="
+            SELECT COUNT(*) FROM characters
+            WHERE account=$account_id AND name=\"Miaztest\" AND race=1 AND class=1 AND gender=0
+              AND level=1 AND map=0 AND online=0 AND transguid=0
+              AND trans_x=0 AND trans_y=0 AND trans_z=0 AND trans_o=0;")"
+          [[ "$realm_count" == 1 && "$account_id" =~ ^[0-9]+$ && "$character_count" == 1 ]]
+        '
+        echo "health: orchestration, processes, host sockets, and semantic fixture passed"
+        ;;
+    smoke)
+        require_secrets
+        "$base_dir/tools/bootstrap_character.py"
+        ;;
+    reset-state) reset false "${2:-}" ;;
+    reset-all) reset true "${2:-}" ;;
+    *) usage ;;
+esac
