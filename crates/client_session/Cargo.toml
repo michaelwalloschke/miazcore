@@ -1,0 +1,12 @@
+[package]
+name = "client_session"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+client_protocol.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@
 
 A private learning project for building a small, original game client that speaks to an AzerothCore Wrath of the Lich King 3.3.5a server.
 
-> **Current status:** the reproducible local AzerothCore Reference Realm is implemented and proven. The production Learning Client is specified but has not yet been implemented. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
+> **Current status:** the reproducible local AzerothCore Reference Realm and the first production Learning Client slice are implemented. The client currently renders an explicitly offline Diagnostic World; authentication, world entry, networked movement, and Movement Proof remain later slices. Everything under `.scratch/learning-client/prototypes/` is disposable evidence, not production code.
 
 ## What this project is
 
@@ -27,12 +27,12 @@ No Blizzard client installation, data files, terrain, models, audio, or interfac
 | --- | --- | --- |
 | Reference Realm | Implemented and proven | A repository-owned, six-service Docker Compose stack with pinned AzerothCore images, deterministic fixture provisioning, health checks, and a real protocol smoke test |
 | Protocol contract | Decision-complete | Build-12340 login/world state machines, SRP6, encrypted world headers, character entry, synchronization, self-state decoding, and movement framing |
-| Client architecture | Decision-complete | Engine-free protocol and session layers beneath a thin Bevy adapter |
-| Diagnostic experience | Prototyped | A disposable browser mock defines the intended viewport, controls, state presentation, and correction feedback |
-| Engine/platform path | Prototyped | A disposable Bevy shell renders on Apple Silicon Metal and compile-checks the Windows MSVC target |
-| Production Learning Client | Not implemented | The implementation route begins with an offline Bevy Diagnostic World, then adds the real network path capability by capability |
+| Client architecture | Implemented foundation | A four-package production workspace enforces engine-free protocol/session layers beneath a thin Bevy adapter |
+| Diagnostic experience | Implemented offline | The production viewport-first cockpit renders project-owned primitives, three-pose diagnostics, controls, and semantic events without networking |
+| Engine/platform path | Implemented foundation | The production shell renders on Apple Silicon Metal, runs headless adapter tests, and compile-checks the Windows MSVC target |
+| Production Learning Client | Slice 1 complete | Immutable configuration, zeroizing credentials, bounded semantic queues, an offline session source, and the Bevy Diagnostic World are implemented |
 
-The Reference Realm smoke test currently stops after authenticated character enumeration. It does **not** claim production-client world entry or movement; those are the next implementation frontier.
+The production client and Reference Realm remain deliberately disconnected in slice 1. The realm smoke test stops after authenticated character enumeration, while the application remains visibly `Offline`; neither path claims production-client world entry or movement. Authenticated realm discovery is the next implementation frontier.
 
 ## Architecture
 
@@ -54,23 +54,55 @@ flowchart LR
 
 The responsibilities are intentionally strict:
 
-- `client_protocol` owns wire codecs, SRP6 and header crypto, packet framing, and a project-owned AzerothCore movement representation. It has no Bevy or socket dependency.
-- `client_session` owns the ordered login/world state machine and blocking sockets on a dedicated thread. It exposes semantic commands, events, and snapshots over bounded channels.
-- `client_bevy` owns only player input, prediction/interpolation presentation, placeholder rendering, camera control, and redacted diagnostics.
+- `client_protocol` is the engine-free boundary that will own wire codecs, SRP6 and header crypto, packet framing, and project-owned AzerothCore movement types. Slice 1 implements only the locked build boundary; protocol behavior remains deferred.
+- `client_session` owns immutable configuration, zeroizing credentials, semantic state, bounded queues, and session lifecycle. Slice 1 runs a dedicated offline worker; sockets and the ordered login/world state machine remain deferred.
+- `client_bevy` owns only player input, presentation/interpolation, placeholder rendering, camera control, and redacted diagnostics. Engine-independent prediction remains a later `client_session` capability; slice 1 moves only an explicitly offline display placeholder.
 - `learning_client` composes those layers without hiding protocol or retry behavior.
 
 Control messages use a lossless FIFO with capacity 16 plus a latest-value movement intent. Session output uses a lossless FIFO with capacity 64 plus a latest-value client snapshot. The Bevy side processes systems in the order **Ingress → Input → Presentation → Camera → Diagnostics**.
 
-The selected production baseline is Rust 1.97.1 and Bevy 0.19.0. The disposable engine proof already pins those exact versions.
+The production workspace pins Rust 1.97.1, Bevy 0.19.0, every direct dependency, and `Cargo.lock`.
 
 ## Installation
 
-There is no production client binary to install yet. Clone the repository to run the Reference Realm or inspect the prototypes:
+Clone the repository to run the production offline client, the Reference Realm, or the disposable prototypes:
 
 ```sh
 git clone git@github.com:michaelwalloschke/miazcore.git
 cd miazcore
 ```
+
+The root `rust-toolchain.toml` installs the exact compiler, Rustfmt, Clippy, and Windows MSVC compile target through Rustup. The production client also requires the Reference Realm secret files to exist and be private, even though slice 1 never opens a socket.
+
+## Quick start: Offline Diagnostic World
+
+From the repository root, create or retain the ignored `0600` credential files:
+
+```sh
+infra/azerothcore/realm init-secrets
+```
+
+Launch the production Learning Client:
+
+```sh
+cargo run --locked -p learning_client
+```
+
+Use camera-relative `WASD` for display-only movement inside the five-metre offline display guide, right-mouse drag or the arrow keys to orbit, and the mouse wheel or `Q`/`E` to zoom. The client remains visibly `Offline`; its display placeholder moves while Submitted Pose and Realm-observed Pose remain unavailable and their markers stay hidden.
+
+Run the complete routine code/platform gate:
+
+```sh
+scripts/check.sh
+```
+
+Produce and validate a bounded Metal screenshot plus semantic sidecar:
+
+```sh
+scripts/render-smoke.sh
+```
+
+Generated render artifacts go under the ignored `artifacts/` directory by default.
 
 ### Reference Realm prerequisites
 
@@ -285,7 +317,7 @@ Evidence is retained as one hashed, redacted bundle. Hidden retries are not allo
 
 The production client grows through eight cumulative capability slices:
 
-1. offline production scaffold and Diagnostic World;
+1. **complete:** offline production scaffold and Diagnostic World;
 2. authenticated realm discovery;
 3. authenticated character selection;
 4. movement-ready world-entry protocol handling;
@@ -300,6 +332,15 @@ Each slice keeps the engine-independent boundary intact and admits only work req
 
 ```text
 .
+├── Cargo.toml                         Production Rust workspace
+├── Cargo.lock                         Exact transitive dependency lock
+├── rust-toolchain.toml                Rust, component, and target pin
+├── crates/
+│   ├── client_protocol/               Engine-independent protocol boundary
+│   ├── client_session/                Configuration and semantic session boundary
+│   ├── client_bevy/                   Thin Bevy adapter and Diagnostic World
+│   └── learning_client/               Composition binary
+├── scripts/                            Routine, dependency, render, and platform gates
 ├── CONTEXT.md                         Project vision and standing constraints
 ├── docs/
 │   └── agents/                        Repository conventions for automation
@@ -313,7 +354,7 @@ Each slice keeps the engine-independent boundary intact and admits only work req
         └── prototypes/                Disposable browser and Bevy proofs
 ```
 
-The future production Rust workspace will live outside `.scratch/`. The scratch prototypes are deliberately isolated so their shortcuts cannot become accidental architecture.
+Production code lives in the root Cargo workspace. The scratch prototypes remain deliberately isolated so their shortcuts cannot become accidental architecture.
 
 ## Scope boundaries
 

@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/client_protocol",
+    "crates/client_session",
+    "crates/client_bevy",
+    "crates/learning_client",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+bevy = { version = "=0.19.0", default-features = false, features = ["3d", "ui"] }
+client_bevy = { path = "crates/client_bevy", version = "=0.1.0" }
+client_protocol = { path = "crates/client_protocol", version = "=0.1.0" }
+client_session = { path = "crates/client_session", version = "=0.1.0" }
+zeroize = { version = "=1.8.2", default-features = false, features = ["alloc"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

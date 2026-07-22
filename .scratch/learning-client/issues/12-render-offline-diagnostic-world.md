@@ -1,7 +1,7 @@
 # Render the Offline Diagnostic World from the Production Scaffold
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: None — can start immediately
 
 ## Parent

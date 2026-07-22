@@ -1,0 +1,15 @@
+[package]
+name = "client_bevy"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy.workspace = true
+client_session.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+blake3 = { version = "=1.8.5", features = ["pure"] }
+
+[lints]
+workspace = true
