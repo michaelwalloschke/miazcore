@@ -10,7 +10,7 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use client_session::{
     CharacterSelectionSession, ClientConfig, ClientConfigSpec, ClientEventKind, ClientPhase,
-    ControlCommand, CredentialPaths, EntryStage, FailureCategory,
+    ControlCommand, CredentialPaths, EntryStage, FailureCategory, RecoveryAction,
 };
 
 const ABSENT_CHARACTER: &str = "Miazmissing";
@@ -53,22 +53,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         "nonexistent-account" => verify_failure(
             snapshot,
             evidence.events(),
-            FailureCategory::Authentication,
-            &[EntryStage::LoginConnection, EntryStage::LoginAuthentication],
-            None,
+            ExpectedFailure {
+                category: FailureCategory::Authentication,
+                stage: "login authentication",
+                context: "fixture account authentication was rejected",
+                recovery: RecoveryAction::CheckCredentials,
+                stages: &[EntryStage::LoginConnection, EntryStage::LoginAuthentication],
+                character: None,
+            },
         )?,
         "absent-character" => verify_failure(
             snapshot,
             evidence.events(),
-            FailureCategory::Configuration,
-            &[
-                EntryStage::LoginConnection,
-                EntryStage::LoginAuthentication,
-                EntryStage::RealmSelection,
-                EntryStage::WorldAuthentication,
-                EntryStage::CharacterSelection,
-            ],
-            Some(ABSENT_CHARACTER),
+            ExpectedFailure {
+                category: FailureCategory::Configuration,
+                stage: "character selection",
+                context: "configured character was absent from the authenticated realm",
+                recovery: RecoveryAction::FixConfiguration,
+                stages: &[
+                    EntryStage::LoginConnection,
+                    EntryStage::LoginAuthentication,
+                    EntryStage::RealmSelection,
+                    EntryStage::WorldAuthentication,
+                    EntryStage::CharacterSelection,
+                ],
+                character: Some(ABSENT_CHARACTER),
+            },
         )?,
         _ => unreachable!(),
     }
@@ -119,12 +129,20 @@ fn verify_success(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct ExpectedFailure<'a> {
+    category: FailureCategory,
+    stage: &'a str,
+    context: &'a str,
+    recovery: RecoveryAction,
+    stages: &'a [EntryStage],
+    character: Option<&'a str>,
+}
+
 fn verify_failure(
     snapshot: &client_session::ClientSnapshot,
     events: &[client_session::ClientEvent],
-    expected: FailureCategory,
-    expected_stages: &[EntryStage],
-    expected_character: Option<&str>,
+    expected: ExpectedFailure<'_>,
 ) -> Result<(), Box<dyn Error>> {
     let failure = snapshot
         .latest_failure
@@ -138,13 +156,16 @@ fn verify_failure(
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.message() == failure.context());
-    let character_matches = expected_character.is_none_or(|expected_character| {
+    let character_matches = expected.character.is_none_or(|expected_character| {
         snapshot.identity.character_name() == expected_character
             && failure.context().contains("configured character")
     });
-    if failure.category() != expected
+    if failure.category() != expected.category
+        || failure.stage() != expected.stage
+        || failure.context() != expected.context
+        || failure.recommended_recovery() != expected.recovery
         || !matches!(snapshot.phase, ClientPhase::Failed(_))
-        || entering_stages(events) != expected_stages
+        || entering_stages(events) != expected.stages
         || rejected != 1
         || !diagnostic_matches
         || !character_matches
@@ -163,7 +184,8 @@ fn verify_failure(
         )
     {
         return Err(io::Error::other(format!(
-            "negative probe contract mismatch: expected {expected:?}, got {:?}",
+            "negative probe contract mismatch: expected {:?}, got {:?}",
+            expected.category,
             failure.category()
         ))
         .into());
@@ -172,7 +194,7 @@ fn verify_failure(
         "character selection negative probe: PASS category={:?} stage={} configured_character={} recovery={:?} retries=0 disconnected=true player_login_sent=false",
         failure.category(),
         failure.stage(),
-        expected_character.unwrap_or("not-applicable"),
+        expected.character.unwrap_or("not-applicable"),
         failure.recommended_recovery(),
     );
     Ok(())
