@@ -1,9 +1,43 @@
 # Design the engine-independent Learning Client architecture
 
 Type: wayfinder:grilling
-Status: claimed
+Status: resolved
 Blocked by: [Trace the minimal AzerothCore world-entry protocol](01-trace-world-entry-protocol.md), [Choose the Learning Client engine direction](03-choose-engine-direction.md), [Prototype the diagnostic World-entry experience](04-prototype-diagnostic-world-entry.md), [Decide the minimal networked movement contract](06-decide-networked-movement-contract.md), [Define the minimum authoritative self-state boundary](10-define-minimum-authoritative-self-state-boundary.md), [Prove the Bevy shell and platform test path](11-prove-bevy-shell-platform-path.md)
 
 ## Question
 
 How should the engine-free Rust protocol and session/domain crates, their bounded command/event boundary, ordered I/O ownership, movement and correction state, configuration and diagnostics, and the outer Bevy plugin/application crate be separated so that packet/crypto/session behavior remains deterministic and testable while Bevy owns only presentation, input, camera, interpolation, and diagnostic projection?
+
+## Answer
+
+Use one Cargo workspace with three libraries and one composition binary. `client_bevy` depends on `client_session`, which depends on `client_protocol`; dependencies never point back toward the engine. Do not introduce a separately published `client_domain` crate in this slice. Instead, keep strict private `api -> runtime -> machine -> domain` layers inside `client_session`, with the machine also consuming project-owned `client_protocol` types. This preserves an extractable domain boundary without prematurely creating another public workspace API.
+
+`client_protocol` owns login and world framing, SRP6 and header crypto, typed packet codecs, `AcoreMovementInfo`, selective self-update decoding, compression limits, golden transcripts, and structured codec failures. It has no sockets, async runtime, monotonic clock, Bevy, or UI dependency. Its public API contains only project-owned types. Pinned `wow_srp`, `wow_login_messages`, or individually verified `wow_world_messages` codecs may be reused internally only after byte-level golden tests prove parity. Generated third-party types never cross into `client_session`; the known AzerothCore movement and living-update differences remain local codecs. AzerothCore wire behavior, golden fixtures, and Reference Realm tests are the compatibility authority. Do not fork an upstream dependency for this slice.
+
+`client_session` is an active service running on one dedicated `std::thread` with blocking TCP sockets, bounded channels, and configured socket timeouts. That thread exclusively owns both sockets, ordered cipher streams, monotonic protocol time, the 60 Hz prediction clock, 10 Hz heartbeat production, write ordering and heartbeat coalescing, logout, reconnect, and Movement Proof. Bevy tasks and schedules never touch a socket or cipher. Internally, the runtime interprets deterministic machine decisions and is the only layer that performs I/O; the domain layer contains scalar values such as `WorldPose`, phases, movement state, proof state, commands, and events, with no protocol, socket, or engine types.
+
+Use this non-blocking application boundary:
+
+```text
+Bevy -> Session
+  bounded ControlCommand FIFO: 16
+  latest-value MovementIntent mailbox
+
+Session -> Bevy
+  bounded ClientEvent FIFO: 64
+  latest ClientSnapshot projection
+```
+
+The lossless control FIFO carries only semantic operations: `StartEntry`, `BeginMovementProof`, `Disconnect`, and failure-only `RetryEntry`. `StartEntry` owns the entire configured login-through-control-sync path; `BeginMovementProof` owns saving logout, offline wait, fresh authentication, and pose comparison. Bevy cannot advance individual protocol states, and retry always starts with fresh sockets and crypto rather than resuming mid-stream. The replaceable movement mailbox carries current intent; the session samples it at 60 Hz and creates lossless start/stop transitions plus coalescible heartbeats. `ClientEvent` preserves causal semantic transitions. `ClientSnapshot` exposes the current phase, three diagnostic poses, run speed, queue counters, latest failure, and sanitized diagnostics so current state remains observable even if the event FIFO fills. A full lossless queue is an explicit backpressure failure: stop prediction, gate input, retain diagnostic evidence, and require an explicit retry rather than blocking or silently dropping data.
+
+The session owns the Entry Anchor, previous/current **Predicted Pose**, Submitted Pose, Realm-observed Pose, realm-provided run speed, and correction-policy decision. Prediction advances at the session's deterministic 60 Hz, not Bevy's frame rate. On authoritative disagreement, the session immediately corrects Predicted Pose and emits either `Smooth { duration: 300 ms }` or `Snap`; map changes and deltas over five metres snap. Bevy alone owns **Rendered Pose** and performs frame-rate interpolation toward Predicted Pose. The default Diagnostic World continues to show Rendered, Submitted, and Realm-observed poses; Predicted Pose is an internal truth available only to deeper debugging.
+
+Keep an exhaustive internal protocol state machine, but expose stable product phases only: `Offline`, `Entering(EntryStage)`, `MovementReady`, `ProvingMovement(ProofStage)`, and `Failed(Recovery)`. Entry stages cover login connection/authentication, realm selection, world authentication, character selection, bootstrap, and control synchronization. Proof stages cover saving logout, waiting offline, reconnecting, and comparing. Every phase transition emits a semantic event. Optional redacted wire provenance may add direction, opcode, packet sequence, and relevant byte offset, but raw packet bodies, generated protocol enums, and secrets never cross into Bevy.
+
+The `learning_client` binary is the composition root. It loads one immutable configuration before constructing Bevy or the session. Non-secret configuration identifies the build, realm, character, endpoints, timeouts, and credential-file paths. Account and password default to the existing ignored `0600` Reference Realm secret files; plaintext credentials are forbidden in committed TOML, command-line arguments, and environment variables. Credentials enter the session once through a redacted, zeroizing wrapper and never appear in commands, events, snapshots, serialization, or logs. Bevy receives only sanitized realm and character identity. Configuration changes require a restart.
+
+`client_bevy` remains one library with internal `SessionBridgePlugin`, `DiagnosticWorldPlugin`, `ChaseCameraPlugin`, and `DiagnosticsPlugin` components, composed by one public `LearningClientPlugin`. The bridge drains session events and snapshots and publishes latest movement intent. The other plugins own only project-created placeholder geometry, character presentation, chase/orbit camera behavior, simple controls, and diagnostic projection. Order their systems as `Ingress -> Input -> Presentation -> Camera -> Diagnostics`. The bridge remains testable with `MinimalPlugins`; window and renderer tests install the visual plugins. On exit, the composition root signals shutdown, the runtime's bounded socket waits allow it to wake, and the worker is joined before process termination.
+
+Production and deterministic tests exercise the same machine. Private `TransportFactory`, `MonotonicClock`, and `EntropySource` ports use real sockets, time, and secure entropy in production, while tests provide scripted transports, an explicitly advanced clock, and deterministic entropy. The machine consumes semantic commands, decoded packets, timer observations, and transport outcomes and produces ordered send requests, state changes, events, and snapshots; the runtime executes those effects and reports results back. Protocol tests operate directly on bytes and golden crypto transcripts, session tests require no engine or sleeps, Reference Realm tests replace only the scripted transport with real sockets, and Bevy adapter tests replace the session boundary rather than networking. No test-only state-machine branch, global clock, public trait framework, or Bevy initialization enters the engine-free tests.
+
+Failures are fail-closed and categorized as configuration, authentication, transport, protocol incompatibility, unsupported self-control, timeout, or internal backpressure. Each carries redacted context and a recommended recovery action. There is no automatic retry in the World-entry Slice because it would obscure the first failing transition and destabilize diagnostic evidence. `Disconnect` remains valid in every phase and performs best-effort protocol logout followed by bounded socket shutdown.
