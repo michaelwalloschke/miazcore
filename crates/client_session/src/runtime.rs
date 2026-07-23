@@ -2089,7 +2089,12 @@ mod tests {
         let state = ScriptState::default();
         let mut transport = ControlInjectingTransport {
             client: Arc::clone(&client),
-            polls: 0,
+            actions: VecDeque::from([
+                MovementTestAction::Pending,
+                MovementTestAction::TurnNorth,
+                MovementTestAction::FocusLoss,
+                MovementTestAction::Disconnect,
+            ]),
             state: state.clone(),
         };
         let mut clock = FixedClock::sequence([
@@ -3991,8 +3996,15 @@ mod tests {
 
     struct ControlInjectingTransport {
         client: Arc<crate::boundary::SessionClient>,
-        polls: u8,
+        actions: VecDeque<MovementTestAction>,
         state: ScriptState,
+    }
+
+    enum MovementTestAction {
+        Pending,
+        TurnNorth,
+        FocusLoss,
+        Disconnect,
     }
 
     impl Read for ControlInjectingTransport {
@@ -4019,21 +4031,24 @@ mod tests {
         }
 
         fn poll_read(&mut self, _destination: &mut [u8]) -> io::Result<Option<usize>> {
-            self.polls = self.polls.saturating_add(1);
-            match self.polls {
-                2 => self
+            match self
+                .actions
+                .pop_front()
+                .unwrap_or(MovementTestAction::Pending)
+            {
+                MovementTestAction::Pending => {}
+                MovementTestAction::TurnNorth => self
                     .client
                     .publish_movement_intent(crate::MovementIntent::planar(0.0, 1.0).unwrap())
                     .expect("replaceable turn intent should be accepted"),
-                3 => self
+                MovementTestAction::FocusLoss => self
                     .client
                     .publish_movement_intent(crate::MovementIntent::idle())
                     .expect("focus-loss stop edge should be accepted"),
-                4 => self
+                MovementTestAction::Disconnect => self
                     .client
                     .send_control(ControlCommand::Disconnect)
                     .expect("deterministic loop shutdown should be accepted"),
-                _ => {}
             }
             Ok(None)
         }
