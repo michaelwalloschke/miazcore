@@ -2096,8 +2096,8 @@ mod tests {
             Duration::ZERO,
             Duration::ZERO,
             Duration::from_millis(100),
-            Duration::from_millis(200),
-            Duration::from_millis(200),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
         ]);
         let mut stream = WorldClientStream::new(&key);
 
@@ -2126,8 +2126,8 @@ mod tests {
                 MSG_MOVE_STOP,
             ]
         );
-        // Both overdue 100 ms windows produce exactly one heartbeat each;
-        // no ten-frame catch-up burst is permitted.
+        // The second 900 ms catch-up covers nine heartbeat slots but produces
+        // only the latest pose; no burst is permitted.
         assert_eq!(
             opcodes
                 .iter()
@@ -2139,6 +2139,11 @@ mod tests {
         assert_eq!(snapshot.realm_observed_pose, None);
         assert_eq!(snapshot.submitted_pose, snapshot.predicted_pose);
         assert!(snapshot.submitted_pose.unwrap().north > anchor.north);
+        assert!(
+            (snapshot.submitted_pose.unwrap().east - anchor.east)
+                .hypot(snapshot.submitted_pose.unwrap().north - anchor.north)
+                <= crate::movement::REFERENCE_MOVEMENT_ENVELOPE_METRES
+        );
     }
 
     #[test]
@@ -3098,7 +3103,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_receive_eof_and_partial_movement_write_fail_closed() {
+    fn retained_receive_eof_and_partial_movement_write_report_transport_errors() {
         let key = login_session_key();
         let mut eof_transport = RetainedScriptTransport {
             polls: VecDeque::from([RetainedPoll::Eof]),
@@ -3142,6 +3147,44 @@ mod tests {
             .is_err()
         );
         assert!(!state.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retained_eof_transitions_the_live_session_to_a_recoverable_failed_state() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let mut factory = FaultingEntryFactory {
+            world_reads: Some(movement_ready_success_script()),
+            world_read_error_at_eof: None,
+            fail_world_write_call: None,
+            retained_eof: true,
+            login_state: ScriptState::default(),
+            world_state: ScriptState::default(),
+        };
+        let failure = match run_entry_attempt(
+            &config,
+            &credentials,
+            &mut boundary,
+            &mut factory,
+            &mut FixedClock::default(),
+            &mut FixedEntropy::success(PRIVATE_EPHEMERAL),
+            WorkerTarget::LiveDiagnostic,
+        ) {
+            Err(DiscoveryError::Failure(failure)) => failure,
+            Ok(_) | Err(DiscoveryError::Cancelled | DiscoveryError::Boundary) => {
+                panic!("retained EOF must fail through the session boundary")
+            }
+        };
+        boundary.fail(crate::CommandKind::StartEntry, failure);
+        let snapshot = client.snapshot();
+        assert!(matches!(snapshot.phase, ClientPhase::Failed(_)));
+        assert_eq!(snapshot.submitted_pose, snapshot.entry_anchor);
+        assert_eq!(snapshot.realm_observed_pose, snapshot.entry_anchor);
+        assert_eq!(
+            snapshot.latest_failure.as_ref().unwrap().category(),
+            FailureCategory::Transport
+        );
     }
 
     fn retained_server_frame(opcode: u16, payload: &[u8], key: &[u8; 40]) -> Vec<u8> {
@@ -3392,6 +3435,7 @@ mod tests {
             world_reads: Some(world_reads),
             world_read_error_at_eof,
             fail_world_write_call,
+            retained_eof: false,
             login_state: login_state.clone(),
             world_state: world_state.clone(),
         };
@@ -3738,6 +3782,7 @@ mod tests {
         world_reads: Option<Vec<u8>>,
         world_read_error_at_eof: Option<io::ErrorKind>,
         fail_world_write_call: Option<usize>,
+        retained_eof: bool,
         login_state: ScriptState,
         world_state: ScriptState,
     }
@@ -3752,6 +3797,8 @@ mod tests {
                 read_error_at_eof: None,
                 fail_write_call: None,
                 write_calls: 0,
+                retained_eof: false,
+                retained_active: false,
                 state: self.login_state.clone(),
             })
         }
@@ -3763,6 +3810,8 @@ mod tests {
                 read_error_at_eof: self.world_read_error_at_eof,
                 fail_write_call: self.fail_world_write_call,
                 write_calls: 0,
+                retained_eof: self.retained_eof,
+                retained_active: false,
                 state: self.world_state.clone(),
             })
         }
@@ -3773,6 +3822,8 @@ mod tests {
         read_error_at_eof: Option<io::ErrorKind>,
         fail_write_call: Option<usize>,
         write_calls: usize,
+        retained_eof: bool,
+        retained_active: bool,
         state: ScriptState,
     }
 
@@ -3807,6 +3858,19 @@ mod tests {
         fn close(&mut self) -> io::Result<()> {
             self.state.closed.store(true, Ordering::Release);
             Ok(())
+        }
+
+        fn begin_retained_receive(&mut self) -> io::Result<()> {
+            self.retained_active = true;
+            Ok(())
+        }
+
+        fn poll_read(&mut self, _destination: &mut [u8]) -> io::Result<Option<usize>> {
+            if self.retained_active && self.retained_eof {
+                Ok(Some(0))
+            } else {
+                Ok(None)
+            }
         }
     }
 

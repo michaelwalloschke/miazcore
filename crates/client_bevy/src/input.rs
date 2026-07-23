@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_loss_publishes_a_lossless_idle_edge_for_live_movement() {
+    fn focus_loss_selects_idle_intent_for_live_movement() {
         let moving = live_movement_intent(
             true,
             &client_session::ClientPhase::MovementReady,
