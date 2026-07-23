@@ -1736,22 +1736,23 @@ mod tests {
 
     use crate::{
         ClientConfigSpec, ClientEvent, ClientEventKind, ClientPhase, ControlCommand,
-        CredentialPaths, FailureCategory, SanitizedIdentity, boundary::new_boundary,
+        CredentialPaths, FailureCategory, SanitizedIdentity, WorldPose, boundary::new_boundary,
         config::CredentialMaterial,
     };
     use client_protocol::{
         CMSG_CHAR_ENUM, CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_MOVE_SET_CAN_FLY_ACK,
         CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher, HeaderDirection,
-        LoginChallengeResponse, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, SMSG_AUTH_RESPONSE,
-        SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_RUN_SPEED_CHANGE,
-        SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
-        WorldClientStream, calculate_srp_client_proof, read_logon_challenge_response,
+        LoginChallengeResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP,
+        SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
+        SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY,
+        SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, WorldClientStream, calculate_srp_client_proof,
+        read_logon_challenge_response,
     };
 
     use super::{
         DiscoveryError, EntropySource, EntryAttemptOutcome, LoginTransport, MonotonicClock,
-        TransportFactory, WorkerTarget, poll_live_world_frames, run_entry_attempt, run_worker_loop,
-        run_worker_loop_for,
+        TransportFactory, WorkerTarget, poll_live_world_frames, run_entry_attempt,
+        run_live_movement_loop, run_worker_loop, run_worker_loop_for, write_movement_frame,
     };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
@@ -2068,6 +2069,76 @@ mod tests {
             client.snapshot().realm_observed_pose,
             client.snapshot().entry_anchor
         );
+    }
+
+    #[test]
+    fn fake_clock_retained_loop_coalesces_heartbeats_and_preserves_turn_and_stop_edges() {
+        let key = login_session_key();
+        let anchor = WorldPose {
+            map_id: 0,
+            east: 10.0,
+            north: -4.0,
+            elevation: 83.5,
+            orientation: 0.0,
+        };
+        let (client, mut boundary) = new_boundary(config().identity().clone()).unwrap();
+        let client = Arc::new(client);
+        client
+            .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
+        let state = ScriptState::default();
+        let mut transport = ControlInjectingTransport {
+            client: Arc::clone(&client),
+            polls: 0,
+            state: state.clone(),
+        };
+        let mut clock = FixedClock::sequence([
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        ]);
+        let mut stream = WorldClientStream::new(&key);
+
+        assert!(
+            run_live_movement_loop(
+                &mut boundary,
+                &mut transport,
+                &mut clock,
+                client_protocol::IncrementalWorldServerDecoder::new(&key),
+                &mut stream,
+                anchor,
+                0x1122_3344_5566_7788,
+                7.0,
+            )
+            .is_ok()
+        );
+
+        let frames = decode_client_frames(&state.writes.lock().unwrap());
+        let opcodes = frames.iter().map(|(opcode, _)| *opcode).collect::<Vec<_>>();
+        assert_eq!(
+            opcodes,
+            [
+                MSG_MOVE_START_FORWARD,
+                MSG_MOVE_HEARTBEAT,
+                MSG_MOVE_HEARTBEAT,
+                MSG_MOVE_STOP,
+            ]
+        );
+        // Both overdue 100 ms windows produce exactly one heartbeat each;
+        // no ten-frame catch-up burst is permitted.
+        assert_eq!(
+            opcodes
+                .iter()
+                .filter(|opcode| **opcode == MSG_MOVE_HEARTBEAT)
+                .count(),
+            2
+        );
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.realm_observed_pose, None);
+        assert_eq!(snapshot.submitted_pose, snapshot.predicted_pose);
+        assert!(snapshot.submitted_pose.unwrap().north > anchor.north);
     }
 
     #[test]
@@ -3026,6 +3097,53 @@ mod tests {
         assert_eq!(frames[0].1[..4], 0x1234_5678_u32.to_le_bytes());
     }
 
+    #[test]
+    fn retained_receive_eof_and_partial_movement_write_fail_closed() {
+        let key = login_session_key();
+        let mut eof_transport = RetainedScriptTransport {
+            polls: VecDeque::from([RetainedPoll::Eof]),
+            state: ScriptState::default(),
+        };
+        let mut clock = FixedClock::default();
+        let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
+        let mut client_stream = WorldClientStream::new(&key);
+        assert!(
+            poll_live_world_frames(
+                &mut eof_transport,
+                &mut clock,
+                &mut decoder,
+                &mut client_stream,
+                42,
+            )
+            .is_err()
+        );
+
+        let state = ScriptState::default();
+        let mut partial_transport = PartialFailureTransport {
+            writes: state.writes.clone(),
+            calls: 0,
+        };
+        assert!(
+            write_movement_frame(
+                &mut partial_transport,
+                &mut WorldClientStream::new(&key),
+                &mut FixedClock::default(),
+                MSG_MOVE_START_FORWARD,
+                42,
+                WorldPose {
+                    map_id: 0,
+                    east: 1.0,
+                    north: 2.0,
+                    elevation: 3.0,
+                    orientation: 0.0,
+                },
+                true,
+            )
+            .is_err()
+        );
+        assert!(!state.writes.lock().unwrap().is_empty());
+    }
+
     fn retained_server_frame(opcode: u16, payload: &[u8], key: &[u8; 40]) -> Vec<u8> {
         let size = u16::try_from(payload.len() + 2).unwrap();
         let mut header = [size.to_be_bytes()[0], size.to_be_bytes()[1], 0, 0];
@@ -3726,6 +3844,7 @@ mod tests {
     enum RetainedPoll {
         Pending,
         Bytes(Vec<u8>),
+        Eof,
     }
 
     struct RetainedScriptTransport {
@@ -3759,12 +3878,100 @@ mod tests {
         fn poll_read(&mut self, destination: &mut [u8]) -> io::Result<Option<usize>> {
             match self.polls.pop_front() {
                 None | Some(RetainedPoll::Pending) => Ok(None),
+                Some(RetainedPoll::Eof) => Ok(Some(0)),
                 Some(RetainedPoll::Bytes(bytes)) => {
                     assert!(bytes.len() <= destination.len());
                     destination[..bytes.len()].copy_from_slice(&bytes);
                     Ok(Some(bytes.len()))
                 }
             }
+        }
+    }
+
+    struct PartialFailureTransport {
+        writes: Arc<Mutex<Vec<u8>>>,
+        calls: u8,
+    }
+
+    impl Read for PartialFailureTransport {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for PartialFailureTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.calls = self.calls.saturating_add(1);
+            if self.calls == 1 {
+                let count = buffer.len().min(3);
+                self.writes
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..count]);
+                Ok(count)
+            } else {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for PartialFailureTransport {
+        fn close(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ControlInjectingTransport {
+        client: Arc<crate::boundary::SessionClient>,
+        polls: u8,
+        state: ScriptState,
+    }
+
+    impl Read for ControlInjectingTransport {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for ControlInjectingTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.state.writes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for ControlInjectingTransport {
+        fn close(&mut self) -> io::Result<()> {
+            self.state.closed.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn poll_read(&mut self, _destination: &mut [u8]) -> io::Result<Option<usize>> {
+            self.polls = self.polls.saturating_add(1);
+            match self.polls {
+                2 => self
+                    .client
+                    .publish_movement_intent(crate::MovementIntent::planar(0.0, 1.0).unwrap())
+                    .expect("replaceable turn intent should be accepted"),
+                3 => self
+                    .client
+                    .publish_movement_intent(crate::MovementIntent::idle())
+                    .expect("focus-loss stop edge should be accepted"),
+                4 => self
+                    .client
+                    .send_control(ControlCommand::Disconnect)
+                    .expect("deterministic loop shutdown should be accepted"),
+                _ => {}
+            }
+            Ok(None)
         }
     }
 

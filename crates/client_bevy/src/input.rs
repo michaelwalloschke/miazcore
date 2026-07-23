@@ -32,13 +32,8 @@ fn collect_presentation_input(
     let forward = input_axis(&keys, KeyCode::KeyW, KeyCode::KeyS);
     let local = Vec2::new(right, forward).normalize_or_zero();
     if view.is_live_entry() {
-        let intent = if window.focused
-            && view.snapshot().phase == client_session::ClientPhase::MovementReady
-        {
-            camera_relative_intent(local, camera.yaw)
-        } else {
-            client_session::MovementIntent::idle()
-        };
+        let intent =
+            live_movement_intent(window.focused, &view.snapshot().phase, local, camera.yaw);
         // A lossless edge is queued only when moving toggles; steady input
         // remains a replaceable mailbox value.
         let _ = session.publish_movement_intent(intent);
@@ -56,6 +51,19 @@ fn collect_presentation_input(
         camera.yaw,
         OFFLINE_DISPLAY_SPEED * time.delta_secs(),
     );
+}
+
+fn live_movement_intent(
+    focused: bool,
+    phase: &client_session::ClientPhase,
+    local: Vec2,
+    camera_yaw: f32,
+) -> client_session::MovementIntent {
+    if focused && *phase == client_session::ClientPhase::MovementReady {
+        camera_relative_intent(local, camera_yaw)
+    } else {
+        client_session::MovementIntent::idle()
+    }
 }
 
 fn camera_relative_intent(local: Vec2, camera_yaw: f32) -> client_session::MovementIntent {
@@ -91,7 +99,10 @@ pub(crate) fn advance_offline_presentation(
 mod tests {
     use bevy::prelude::Vec2;
 
-    use super::{DISPLAY_ENVELOPE_RADIUS, advance_offline_presentation, camera_relative_intent};
+    use super::{
+        DISPLAY_ENVELOPE_RADIUS, advance_offline_presentation, camera_relative_intent,
+        live_movement_intent,
+    };
     use crate::world::DiagnosticPresentation;
 
     #[test]
@@ -123,5 +134,23 @@ mod tests {
         assert!(intent.engaged());
         assert!((intent.east() + 1.0).abs() < 0.000_1);
         assert!(intent.north().abs() < 0.000_1);
+    }
+
+    #[test]
+    fn focus_loss_publishes_a_lossless_idle_edge_for_live_movement() {
+        let moving = live_movement_intent(
+            true,
+            &client_session::ClientPhase::MovementReady,
+            Vec2::Y,
+            0.0,
+        );
+        let unfocused = live_movement_intent(
+            false,
+            &client_session::ClientPhase::MovementReady,
+            Vec2::Y,
+            0.0,
+        );
+        assert!(moving.engaged());
+        assert!(!unfocused.engaged());
     }
 }
