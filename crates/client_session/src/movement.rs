@@ -76,26 +76,6 @@ impl GroundPrediction {
             heartbeat: self.moving && self.moving_ticks.is_multiple_of(HEARTBEAT_TICKS),
         }
     }
-
-    /// Apply a generic scripted correction.  The caller may interpolate the
-    /// returned smooth correction; map changes and corrections at or beyond
-    /// the envelope are explicit snaps.
-    #[allow(dead_code)] // wired by the next authoritative-observation capability
-    pub(crate) fn correct(&mut self, observed: WorldPose) -> CorrectionTreatment {
-        let distance =
-            (observed.east - self.predicted.east).hypot(observed.north - self.predicted.north);
-        let treatment = if observed.map_id != self.predicted.map_id
-            || distance >= REFERENCE_MOVEMENT_ENVELOPE_METRES
-        {
-            CorrectionTreatment::Snap
-        } else {
-            CorrectionTreatment::Smooth
-        };
-        if treatment == CorrectionTreatment::Snap {
-            self.predicted = observed;
-        }
-        treatment
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,18 +86,10 @@ pub(crate) struct MovementTick {
     pub(crate) heartbeat: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // exposed together with the scripted-correction test contract
-pub(crate) enum CorrectionTreatment {
-    Smooth,
-    Snap,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        CorrectionTreatment, GroundPrediction, HEARTBEAT_TICKS, PREDICTION_HZ,
-        REFERENCE_MOVEMENT_ENVELOPE_METRES,
+        GroundPrediction, HEARTBEAT_TICKS, PREDICTION_HZ, REFERENCE_MOVEMENT_ENVELOPE_METRES,
     };
     use crate::{MovementIntent, WorldPose};
 
@@ -165,31 +137,5 @@ mod tests {
             (pose.north - anchor().north).abs() <= REFERENCE_MOVEMENT_ENVELOPE_METRES + 0.000_1
         );
         assert!(prediction.tick(MovementIntent::idle()).stopped);
-    }
-
-    #[test]
-    fn correction_threshold_is_smooth_below_five_and_snaps_at_five_or_map_change() {
-        let mut prediction = GroundPrediction::new(anchor(), 7.0).unwrap();
-        assert_eq!(
-            prediction.correct(WorldPose {
-                east: 11.0,
-                ..anchor()
-            }),
-            CorrectionTreatment::Smooth
-        );
-        assert_eq!(
-            prediction.correct(WorldPose {
-                east: 15.0,
-                ..anchor()
-            }),
-            CorrectionTreatment::Snap
-        );
-        assert_eq!(
-            prediction.correct(WorldPose {
-                map_id: 1,
-                ..anchor()
-            }),
-            CorrectionTreatment::Snap
-        );
     }
 }
