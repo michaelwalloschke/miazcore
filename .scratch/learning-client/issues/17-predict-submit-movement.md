@@ -1,7 +1,7 @@
 # Predict and Submit Bounded Ground Movement
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Enter the Live Diagnostic World through Bevy](16-enter-live-diagnostic-world.md)
 
 ## Parent
@@ -16,26 +16,26 @@ Publish camera-relative intent through the latest-value mailbox. Implement deter
 
 ## Entry gate
 
-- [ ] Ticket 16 passes while proving that it emits no movement.
-- [ ] The entry evidence and exact predecessor commit are recorded.
+- [x] Ticket 16 passes while proving that it emits no movement.
+- [x] The entry evidence and exact predecessor commit are recorded.
 
 ## Acceptance criteria
 
-- [ ] Camera-relative normalized input becomes heading-aligned planar movement, and the character turns to its world heading.
-- [ ] Prediction advances on a deterministic 60 Hz clock using the current positive realm-provided run speed.
-- [ ] Predicted displacement is bounded by elapsed time, retains Entry Anchor height, and never leaves the five-metre Reference Movement Envelope.
-- [ ] The latest-value mailbox may replace steady intent without dropping any lossless start or stop transition.
-- [ ] Start and stop frames write immediately and in order; moving state emits coalescible heartbeats at 10 Hz through project-owned `AcoreMovementInfo`.
-- [ ] Submitted Pose advances only after the corresponding frame has been written completely.
-- [ ] Realm-observed Pose remains unchanged until a later authoritative observation; it is never relabelled as accepted or acknowledged.
-- [ ] Rendered Pose interpolates smoothly from Predicted Pose, and diagnostics clearly expose divergence among Rendered, Submitted, and Realm-observed state.
-- [ ] Generic scripted corrections use the accepted smooth treatment below five metres and snap treatment at or above five metres or on map change.
-- [ ] Queue overflow, socket failure, partial/failed write, focus loss, and unsupported movement/control state stop prediction, gate input, retain evidence, and require explicit recovery.
-- [ ] Fake-clock tests cover prediction and heartbeat rates, elapsed-time bounds, transition ordering, heartbeat coalescing, envelope edges, focus loss, complete-write semantics, failures, and correction thresholds.
-- [ ] A reset-scoped live smoke shows smooth movement/turning, valid start/heartbeat/stop writes, visible pose separation, envelope enforcement, and a connection that remains healthy after stop.
-- [ ] The application and evidence make no claim of realm acceptance or persistence.
-- [ ] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
-- [ ] The exit evidence, remaining deferrals, scoped reset evidence, and exact passing commit are recorded.
+- [x] Camera-relative normalized input becomes heading-aligned planar movement, and the character turns to its world heading.
+- [x] Prediction advances on a deterministic 60 Hz clock using the current positive realm-provided run speed.
+- [x] Predicted displacement is bounded by elapsed time, retains Entry Anchor height, and never leaves the five-metre Reference Movement Envelope.
+- [x] The latest-value mailbox may replace steady intent without dropping any lossless start or stop transition.
+- [x] Start and stop frames write immediately and in order; moving state emits coalescible heartbeats at 10 Hz through project-owned `AcoreMovementInfo`.
+- [x] Submitted Pose advances only after the corresponding frame has been written completely.
+- [x] Realm-observed Pose remains unchanged until a later authoritative observation; it is never relabelled as accepted or acknowledged.
+- [x] Rendered Pose interpolates smoothly from Predicted Pose, and diagnostics clearly expose divergence among Rendered, Submitted, and Realm-observed state.
+- [x] Generic scripted corrections use the accepted smooth treatment below five metres and snap treatment at or above five metres or on map change.
+- [x] Queue overflow, socket failure, partial/failed write, focus loss, and unsupported movement/control state stop prediction, gate input, retain evidence, and require explicit recovery.
+- [x] Fake-clock tests cover prediction and heartbeat rates, elapsed-time bounds, transition ordering, heartbeat coalescing, envelope edges, focus loss, complete-write semantics, failures, and correction thresholds.
+- [x] A reset-scoped live smoke shows smooth movement/turning, valid start/heartbeat/stop writes, visible pose separation, envelope enforcement, and a connection that remains healthy after stop.
+- [x] The application and evidence make no claim of realm acceptance or persistence.
+- [x] Formatting, locked native workspace/all-target checks, Clippy with warnings denied, native tests, dependency-boundary checks, redaction tests, scripted Metal smoke, and the Windows compile tripwire pass.
+- [x] The exit evidence, remaining deferrals, scoped reset evidence, and exact passing commit are recorded.
 
 ## Explicit deferrals
 
@@ -56,3 +56,8 @@ Publish camera-relative intent through the latest-value mailbox. Implement deter
 ## Comments
 
 - 2026-07-23: Implementation is in progress across `ebc9bba757a19170cbb85ceb28b4ae97c45ffb54` through `1aceab4`. The retained receive/correction subslice and both compositor proofs pass. Deterministic retained-loop evidence now covers a 900-ms heartbeat catch-up coalesced to one latest frame, heading replacement, focus-loss stop intent, EOF-to-recoverable failure, and partial-write transport errors. Ticket exit evidence is still being consolidated, so this ticket is deliberately not resolved.
+
+## Answer
+
+Resolved by `db04dd47eddc903bed8e846a789de3e29c3aed9a`; see
+[Slice 17 exit-gate evidence](../research/slice-17-exit-gate.md).
