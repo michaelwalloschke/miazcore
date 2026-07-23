@@ -1,8 +1,8 @@
-use std::thread::JoinHandle;
+use std::{path::PathBuf, thread::JoinHandle};
 
 use crate::{
     ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
-    boundary::{BoundaryError, SessionClient, new_boundary},
+    boundary::{BoundaryError, SessionClient, new_boundary, new_boundary_with_proof_stage},
     runtime::{self, WorkerTarget},
 };
 
@@ -32,8 +32,20 @@ impl HeadlessSession {
         loaded: LoadedClientConfig,
         target: WorkerTarget,
     ) -> Result<Self, BoundaryError> {
+        Self::start_with_proof_stage(loaded, target, None)
+    }
+
+    pub(crate) fn start_with_proof_stage(
+        loaded: LoadedClientConfig,
+        target: WorkerTarget,
+        proof_stage_output: Option<PathBuf>,
+    ) -> Result<Self, BoundaryError> {
         let identity = loaded.config().identity().clone();
-        let (client, boundary) = new_boundary(identity)?;
+        let (client, boundary) = if proof_stage_output.is_some() {
+            new_boundary_with_proof_stage(identity, proof_stage_output)?
+        } else {
+            new_boundary(identity)?
+        };
         let worker = runtime::spawn_production_worker(loaded, boundary, target)?;
         Ok(Self {
             client,

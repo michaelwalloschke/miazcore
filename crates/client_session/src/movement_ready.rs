@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::{
     ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
     boundary::BoundaryError,
@@ -104,6 +106,23 @@ impl LiveDiagnosticSession {
     /// Returns an error if initial boundary publication or worker creation fails.
     pub fn start(loaded: LoadedClientConfig) -> Result<Self, BoundaryError> {
         HeadlessSession::start(loaded, WorkerTarget::LiveDiagnostic).map(Self)
+    }
+
+    /// Start a retained session that publishes a non-secret proof stage marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initial boundary publication or worker creation fails.
+    pub fn start_with_proof_stage(
+        loaded: LoadedClientConfig,
+        proof_stage_output: PathBuf,
+    ) -> Result<Self, BoundaryError> {
+        HeadlessSession::start_with_proof_stage(
+            loaded,
+            WorkerTarget::LiveDiagnostic,
+            Some(proof_stage_output),
+        )
+        .map(Self)
     }
 
     /// Send a lossless semantic control command to the worker.

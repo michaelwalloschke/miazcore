@@ -94,7 +94,8 @@ impl DiagnosticPresentation {
         if target.map_id != anchor.map_id {
             return;
         }
-        let correction_requires_snap = snapshot.correction_target.is_some()
+        let correction_requires_snap = (snapshot.correction_target.is_some()
+            || reconnect_observation.is_some())
             && planar_distance(predicted, target) >= CORRECTION_SNAP_DISTANCE_METRES;
         if correction_requires_snap {
             self.apply_rendered_pose(anchor, target);
@@ -365,7 +366,9 @@ fn project_pose_markers(
 #[cfg(test)]
 mod tests {
     use bevy::prelude::Vec3;
-    use client_session::{ClientSnapshot, CorrectionTarget, SanitizedIdentity, WorldPose};
+    use client_session::{
+        ClientSnapshot, CorrectionTarget, MovementProofEvidence, SanitizedIdentity, WorldPose,
+    };
 
     use super::{
         DiagnosticPresentation, PARKED_MARKER_HEIGHT, rendered_avatar_translation,
@@ -466,5 +469,28 @@ mod tests {
         assert_eq!(presentation.rendered_pose, Some(target));
         assert_eq!(presentation.rendered_planar, bevy::prelude::Vec2::ZERO);
         assert_eq!(snapshot.realm_observed_pose, Some(anchor));
+    }
+
+    #[test]
+    fn reconnect_observation_snaps_at_the_same_five_metre_boundary() {
+        let identity = SanitizedIdentity::new(1, "Realm", "Character", 12_340).unwrap();
+        let anchor = WorldPose::origin(0);
+        let reconnect = WorldPose {
+            east: 5.0,
+            ..anchor
+        };
+        let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.entry_anchor = Some(anchor);
+        snapshot.predicted_pose = Some(anchor);
+        snapshot.realm_observed_pose = Some(reconnect);
+        snapshot.movement_proof = Some(MovementProofEvidence {
+            expected: anchor,
+            observed: Some(reconnect),
+            tolerance_metres: 0.25,
+        });
+
+        let mut presentation = DiagnosticPresentation::default();
+        presentation.project_live_presentation(&snapshot, 0.01);
+        assert_eq!(presentation.rendered_pose, Some(reconnect));
     }
 }

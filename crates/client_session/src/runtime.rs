@@ -60,6 +60,10 @@ trait TransportFactory: Send {
 
 trait MonotonicClock: Send {
     fn now(&mut self) -> Duration;
+
+    fn sleep(&mut self, duration: Duration) {
+        thread::sleep(duration);
+    }
 }
 
 trait EntropySource: Send {
@@ -244,6 +248,14 @@ fn run_worker_loop_for<F, C, E>(
                                 if !boundary.proof_stage(ProofStage::Reconnecting) {
                                     return;
                                 }
+                                if let Err(failure) =
+                                    wait_for_external_reconnect_release(boundary, clock)
+                                {
+                                    boundary
+                                        .fail(ControlCommand::BeginMovementProof.kind(), failure);
+                                    movement_attempt_failed = true;
+                                    continue;
+                                }
                                 match run_entry_attempt_mode(
                                     config,
                                     credentials,
@@ -318,7 +330,7 @@ fn run_worker_loop_for<F, C, E>(
                         }
                     }
                     Err(DiscoveryError::Cancelled) => {
-                        boundary.discard_pending_controls();
+                        boundary.discard_stale_movement_controls();
                         boundary.disconnect();
                     }
                     Err(DiscoveryError::Boundary) => {}
@@ -1184,6 +1196,9 @@ where
                     }
                     continue;
                 };
+                if boundary.is_shutdown() {
+                    return Ok(RetainedLoopExit::Disconnect);
+                }
                 write_world_frame(
                     transport,
                     client_stream,
@@ -1206,7 +1221,7 @@ where
                 // logout. Keep the old session alive for a small bounded
                 // offline-settle interval before its owning stack frame drops
                 // both the socket and the ordered cipher.
-                std::thread::sleep(Duration::from_millis(250));
+                wait_for_offline_settlement(clock);
                 return Ok(RetainedLoopExit::BeginMovementProof { expected });
             }
             Ok(ControlCommand::MovementTransition { engaged }) => {
@@ -1399,6 +1414,46 @@ where
             }
         }
     }
+}
+
+fn wait_for_offline_settlement(clock: &mut impl MonotonicClock) {
+    clock.sleep(Duration::from_millis(250));
+}
+
+/// The macOS reconnect-fault probe has to stop the local Worldserver between
+/// two real sessions. A stage marker alone races loopback connection setup, so
+/// only the explicitly configured external-proof adapter waits for its
+/// companion acknowledgement. Production and ordinary proof paths never have
+/// a marker and return immediately.
+fn wait_for_external_reconnect_release(
+    boundary: &WorkerBoundary,
+    clock: &mut impl MonotonicClock,
+) -> Result<(), ClientFailure> {
+    let Some(marker) = boundary.reconnect_release_marker() else {
+        return Ok(());
+    };
+    let deadline = clock
+        .now()
+        .checked_add(Duration::from_secs(30))
+        .ok_or_else(timeout_failure_for_reconnect_release)?;
+    loop {
+        if marker.is_file() {
+            return Ok(());
+        }
+        if clock.now() > deadline {
+            return Err(timeout_failure_for_reconnect_release());
+        }
+        clock.sleep(Duration::from_millis(25));
+    }
+}
+
+fn timeout_failure_for_reconnect_release() -> ClientFailure {
+    ClientFailure::new(
+        FailureCategory::Timeout,
+        "movement proof reconnect",
+        "external reconnect fault injector did not release the local test session",
+        RecoveryAction::RetryExplicitly,
+    )
 }
 
 fn poll_live_world_frames<T, C>(
@@ -2051,13 +2106,13 @@ mod tests {
     };
     use client_protocol::{
         CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK, CMSG_FORCE_RUN_SPEED_CHANGE_ACK,
-        CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher,
-        HeaderDirection, LoginChallengeResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD,
-        MSG_MOVE_STOP, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
-        SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD,
-        SMSG_LOGOUT_COMPLETE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
-        WorldClientStream, calculate_srp_client_proof, decode_login_verify_world,
-        read_logon_challenge_response,
+        CMSG_LOGOUT_REQUEST, CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP,
+        HeaderCipher, HeaderDirection, LoginChallengeResponse, MSG_MOVE_HEARTBEAT,
+        MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM,
+        SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE,
+        SMSG_LOGIN_VERIFY_WORLD, SMSG_LOGOUT_COMPLETE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ,
+        SMSG_UPDATE_OBJECT, WorldClientStream, calculate_srp_client_proof,
+        decode_login_verify_world, read_logon_challenge_response,
     };
 
     use super::{
@@ -2065,7 +2120,7 @@ mod tests {
         SelectedCharacter, SelectedCharacterFields, TransportFactory, WorkerTarget,
         poll_live_world_frames, run_entry_attempt, run_live_movement_loop, run_worker_loop,
         run_worker_loop_for, validate_selected_location, wait_for_logout_complete,
-        write_movement_frame,
+        wait_for_offline_settlement, write_movement_frame,
     };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
@@ -2412,6 +2467,86 @@ mod tests {
         assert_eq!(
             client.snapshot().realm_observed_pose,
             client.snapshot().entry_anchor
+        );
+    }
+
+    #[test]
+    fn movement_proof_lifecycle_uses_fresh_sessions_and_a_fake_clock() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let client = Arc::new(client);
+        let mut factory = ProofLifecycleFactory::new(
+            Arc::clone(&client),
+            [
+                movement_ready_with_logout_script(),
+                movement_ready_success_script(),
+            ],
+        );
+        let mut clock = FixedClock::sequence((0..512).map(|step| Duration::from_millis(step * 20)));
+        let mut entropy = FixedEntropy::success(PRIVATE_EPHEMERAL);
+
+        let Ok(EntryAttemptOutcome::MovementProofRequested { expected }) = run_entry_attempt(
+            &config,
+            &credentials,
+            &mut boundary,
+            &mut factory,
+            &mut clock,
+            &mut entropy,
+            WorkerTarget::LiveDiagnostic,
+        ) else {
+            panic!("initial proof lifecycle did not reach the proof boundary");
+        };
+        assert!(boundary.proof_stage(crate::ProofStage::Reconnecting));
+        let reconnect = super::run_entry_attempt_mode(
+            &config,
+            &credentials,
+            &mut boundary,
+            &mut factory,
+            &mut clock,
+            &mut entropy,
+            WorkerTarget::MovementReady,
+            super::EntryMode::Reconnect,
+        );
+        assert!(matches!(reconnect, Ok(EntryAttemptOutcome::MovementReady)));
+        assert!(boundary.proof_stage(crate::ProofStage::Comparing));
+        assert!(!boundary.complete_movement_proof(expected));
+        let snapshot = client.snapshot();
+        assert!(
+            snapshot
+                .movement_proof
+                .is_some_and(|proof| proof.observed.is_some())
+        );
+        assert!(!snapshot.movement_proof.unwrap().passed());
+        assert_eq!(clock.sleeps, vec![Duration::from_millis(250)]);
+
+        assert_eq!(factory.login_states.len(), 2);
+        assert_eq!(factory.world_states.len(), 2);
+        assert!(
+            factory
+                .login_states
+                .iter()
+                .all(|state| state.closed.load(Ordering::Acquire))
+        );
+        assert!(
+            factory
+                .world_states
+                .iter()
+                .all(|state| state.closed.load(Ordering::Acquire))
+        );
+        assert!(factory.world_states[0].closed.load(Ordering::Acquire));
+        assert_ne!(
+            Arc::as_ptr(&factory.world_states[0].writes),
+            Arc::as_ptr(&factory.world_states[1].writes),
+            "fresh reconnect must not reuse the old world transport state"
+        );
+        let first_world_frames =
+            decode_client_frames(&factory.world_states[0].writes.lock().unwrap()[74..]);
+        assert!(
+            first_world_frames
+                .iter()
+                .any(|(opcode, _)| *opcode == CMSG_LOGOUT_REQUEST),
+            "the old session must send saving logout before it is discarded"
         );
     }
 
@@ -3317,6 +3452,32 @@ mod tests {
         ])
     }
 
+    fn movement_ready_with_logout_script() -> Vec<u8> {
+        movement_entry_script(&[
+            (
+                SMSG_LOGIN_VERIFY_WORLD,
+                fixture("world-entry-login-verify-body.hex"),
+            ),
+            (
+                SMSG_UPDATE_OBJECT,
+                fixture("world-entry-self-update-body.hex"),
+            ),
+            (
+                SMSG_FORCE_RUN_SPEED_CHANGE,
+                fixture("world-entry-force-run-body.hex"),
+            ),
+            (
+                SMSG_TIME_SYNC_REQ,
+                fixture("world-entry-time-sync-request-body.hex"),
+            ),
+            (
+                SMSG_MOVE_UNSET_CAN_FLY,
+                fixture("world-entry-unset-can-fly-body.hex"),
+            ),
+            (SMSG_LOGOUT_COMPLETE, Vec::new()),
+        ])
+    }
+
     fn movement_entry_script(entry_frames: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut frames = vec![
             (SMSG_AUTH_RESPONSE, accepted_world_auth()),
@@ -3498,6 +3659,13 @@ mod tests {
             u32::from_le_bytes(frames[0].1[6..10].try_into().unwrap()),
             0x0000_0800
         );
+    }
+
+    #[test]
+    fn offline_settlement_is_driven_by_the_injected_clock() {
+        let mut clock = FixedClock::default();
+        wait_for_offline_settlement(&mut clock);
+        assert_eq!(clock.sleeps, vec![Duration::from_millis(250)]);
     }
 
     #[test]
@@ -4115,6 +4283,169 @@ mod tests {
         }
     }
 
+    /// A deterministic two-session harness for the movement-proof lifecycle.
+    /// Only the first retained world session injects proof controls; the
+    /// reconnect always receives a fresh transport and script.
+    struct ProofLifecycleFactory {
+        client: Arc<crate::boundary::SessionClient>,
+        world_reads: VecDeque<Vec<u8>>,
+        login_states: Vec<ScriptState>,
+        world_states: Vec<ScriptState>,
+    }
+
+    impl ProofLifecycleFactory {
+        fn new(
+            client: Arc<crate::boundary::SessionClient>,
+            world_reads: impl IntoIterator<Item = Vec<u8>>,
+        ) -> Self {
+            Self {
+                client,
+                world_reads: world_reads.into_iter().collect(),
+                login_states: Vec::new(),
+                world_states: Vec::new(),
+            }
+        }
+    }
+
+    impl TransportFactory for ProofLifecycleFactory {
+        type Transport = ProofLifecycleTransport;
+
+        fn connect_login(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            let state = ScriptState::default();
+            state.connections.fetch_add(1, Ordering::AcqRel);
+            self.login_states.push(state.clone());
+            Ok(ProofLifecycleTransport::scripted(
+                success_script(),
+                state,
+                Arc::clone(&self.client),
+                VecDeque::new(),
+            ))
+        }
+
+        fn connect_world(&mut self, _config: &crate::ClientConfig) -> io::Result<Self::Transport> {
+            let state = ScriptState::default();
+            state.connections.fetch_add(1, Ordering::AcqRel);
+            let first_session = self.world_states.is_empty();
+            self.world_states.push(state.clone());
+            let actions = if first_session {
+                VecDeque::from([
+                    ProofLifecycleAction::StartForward,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Pending,
+                    ProofLifecycleAction::Stop,
+                    ProofLifecycleAction::BeginProof,
+                ])
+            } else {
+                VecDeque::new()
+            };
+            Ok(ProofLifecycleTransport::scripted(
+                self.world_reads.pop_front().unwrap_or_default(),
+                state,
+                Arc::clone(&self.client),
+                actions,
+            ))
+        }
+    }
+
+    struct ProofLifecycleTransport {
+        reads: Cursor<Vec<u8>>,
+        retained_active: bool,
+        state: ScriptState,
+        client: Arc<crate::boundary::SessionClient>,
+        actions: VecDeque<ProofLifecycleAction>,
+    }
+
+    enum ProofLifecycleAction {
+        Pending,
+        StartForward,
+        Stop,
+        BeginProof,
+    }
+
+    impl ProofLifecycleTransport {
+        fn scripted(
+            reads: Vec<u8>,
+            state: ScriptState,
+            client: Arc<crate::boundary::SessionClient>,
+            actions: VecDeque<ProofLifecycleAction>,
+        ) -> Self {
+            Self {
+                reads: Cursor::new(reads),
+                retained_active: false,
+                state,
+                client,
+                actions,
+            }
+        }
+    }
+
+    impl Read for ProofLifecycleTransport {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.reads.read(buffer)
+        }
+    }
+
+    impl Write for ProofLifecycleTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.state.writes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for ProofLifecycleTransport {
+        fn close(&mut self) -> io::Result<()> {
+            self.state.closed.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn begin_retained_receive(&mut self) -> io::Result<()> {
+            self.retained_active = true;
+            Ok(())
+        }
+
+        fn poll_read(&mut self, destination: &mut [u8]) -> io::Result<Option<usize>> {
+            if !self.retained_active {
+                return Ok(None);
+            }
+            if let Some(action) = self.actions.pop_front() {
+                match action {
+                    ProofLifecycleAction::Pending => {}
+                    ProofLifecycleAction::StartForward => self
+                        .client
+                        .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+                        .expect("scripted proof start should be accepted"),
+                    ProofLifecycleAction::Stop => self
+                        .client
+                        .publish_movement_intent(crate::MovementIntent::idle())
+                        .expect("scripted proof stop should be accepted"),
+                    ProofLifecycleAction::BeginProof => self
+                        .client
+                        .send_control(ControlCommand::BeginMovementProof)
+                        .expect("scripted proof operation should be accepted"),
+                }
+                return Ok(None);
+            }
+            let count = self.reads.read(destination)?;
+            Ok((count != 0).then_some(count))
+        }
+    }
+
     struct CancellingEntryFactory {
         client: Arc<crate::boundary::SessionClient>,
         world_reads: Option<Vec<u8>>,
@@ -4463,6 +4794,7 @@ mod tests {
     struct FixedClock {
         values: Vec<Duration>,
         index: usize,
+        sleeps: Vec<Duration>,
     }
 
     impl FixedClock {
@@ -4470,6 +4802,7 @@ mod tests {
             Self {
                 values: values.into_iter().collect(),
                 index: 0,
+                sleeps: Vec::new(),
             }
         }
     }
@@ -4484,6 +4817,10 @@ mod tests {
                 .unwrap_or(Duration::ZERO);
             self.index = self.index.saturating_add(1);
             value
+        }
+
+        fn sleep(&mut self, duration: Duration) {
+            self.sleeps.push(duration);
         }
     }
 

@@ -29,6 +29,12 @@ fn run() -> Result<(), StartupError> {
         || arguments.external_proof_output.is_some()
     {
         SessionBridge::new(OfflineSession::start(loaded)?)
+    } else if let Some(output) = &arguments.persisted_movement_fault_injection_external_proof_output
+    {
+        SessionBridge::new(LiveDiagnosticSession::start_with_proof_stage(
+            loaded,
+            output.with_extension("stage"),
+        )?)
     } else {
         SessionBridge::new(LiveDiagnosticSession::start(loaded)?)
     };
@@ -75,6 +81,17 @@ fn run() -> Result<(), StartupError> {
             1.0 / 60.0,
         )))
         .add_plugins(RenderProofPlugin::persisted_movement_external(output));
+    } else if let Some(output) = arguments.persisted_movement_fault_injection_external_proof_output
+    {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::persisted_movement_external(output));
+    } else if let Some(output) = arguments.persisted_movement_short_negative_external_proof_output {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::persisted_movement_short_negative_external(output));
     }
 
     app.run();
@@ -89,6 +106,8 @@ struct Arguments {
     live_external_proof_output: Option<PathBuf>,
     live_movement_external_proof_output: Option<PathBuf>,
     persisted_movement_external_proof_output: Option<PathBuf>,
+    persisted_movement_fault_injection_external_proof_output: Option<PathBuf>,
+    persisted_movement_short_negative_external_proof_output: Option<PathBuf>,
     offline: bool,
 }
 
@@ -103,6 +122,8 @@ impl Arguments {
                 || argument == "--live-external-proof-output"
                 || argument == "--live-movement-external-proof-output"
                 || argument == "--persisted-movement-external-proof-output"
+                || argument == "--persisted-movement-fault-injection-external-proof-output"
+                || argument == "--persisted-movement-short-negative-external-proof-output"
             {
                 if parsed.proof_output.is_some()
                     || parsed.live_proof_output.is_some()
@@ -110,6 +131,12 @@ impl Arguments {
                     || parsed.live_external_proof_output.is_some()
                     || parsed.live_movement_external_proof_output.is_some()
                     || parsed.persisted_movement_external_proof_output.is_some()
+                    || parsed
+                        .persisted_movement_fault_injection_external_proof_output
+                        .is_some()
+                    || parsed
+                        .persisted_movement_short_negative_external_proof_output
+                        .is_some()
                 {
                     return Err(StartupError::DuplicateProofOutput);
                 }
@@ -127,6 +154,10 @@ impl Arguments {
                     parsed.live_movement_external_proof_output = output;
                 } else if argument == "--persisted-movement-external-proof-output" {
                     parsed.persisted_movement_external_proof_output = output;
+                } else if argument == "--persisted-movement-fault-injection-external-proof-output" {
+                    parsed.persisted_movement_fault_injection_external_proof_output = output;
+                } else if argument == "--persisted-movement-short-negative-external-proof-output" {
+                    parsed.persisted_movement_short_negative_external_proof_output = output;
                 } else if argument == "--external-proof-output" {
                     parsed.external_proof_output = output;
                 } else {
@@ -145,7 +176,13 @@ impl Arguments {
             && (parsed.live_proof_output.is_some()
                 || parsed.live_external_proof_output.is_some()
                 || parsed.live_movement_external_proof_output.is_some()
-                || parsed.persisted_movement_external_proof_output.is_some())
+                || parsed.persisted_movement_external_proof_output.is_some()
+                || parsed
+                    .persisted_movement_fault_injection_external_proof_output
+                    .is_some()
+                || parsed
+                    .persisted_movement_short_negative_external_proof_output
+                    .is_some())
         {
             return Err(StartupError::OfflineLiveConflict);
         }
@@ -253,6 +290,32 @@ mod tests {
             Arguments {
                 persisted_movement_external_proof_output: Some(
                     "artifacts/persisted-movement.png".into(),
+                ),
+                ..Arguments::default()
+            }
+        );
+        assert_eq!(
+            Arguments::parse([
+                OsString::from("--persisted-movement-fault-injection-external-proof-output"),
+                OsString::from("artifacts/persisted-movement-fault.png"),
+            ])
+            .unwrap(),
+            Arguments {
+                persisted_movement_fault_injection_external_proof_output: Some(
+                    "artifacts/persisted-movement-fault.png".into(),
+                ),
+                ..Arguments::default()
+            }
+        );
+        assert_eq!(
+            Arguments::parse([
+                OsString::from("--persisted-movement-short-negative-external-proof-output"),
+                OsString::from("artifacts/persisted-short-negative.png"),
+            ])
+            .unwrap(),
+            Arguments {
+                persisted_movement_short_negative_external_proof_output: Some(
+                    "artifacts/persisted-short-negative.png".into(),
                 ),
                 ..Arguments::default()
             }

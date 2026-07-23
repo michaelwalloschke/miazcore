@@ -431,13 +431,16 @@ fn format_acceptance(
                     unreachable!("display phase only reports failure for failed snapshots");
                 };
                 format!(
-                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nRETRY ENTRY restarts one complete configured operation.\nInput stays gated. Submitted pose evidence, if present, remains available.{}",
+                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}{}\n\nRETRY ENTRY restarts one complete configured operation.\nInput stays gated. Submitted pose evidence, if present, remains available.{}",
                 recovery.category,
                 recovery.action,
                 snapshot
                     .latest_failure
                     .as_ref()
                     .map_or("No additional diagnostic", client_session::ClientFailure::context),
+                snapshot.movement_proof.map_or_else(String::new, |proof| {
+                    format!("\n\n{}", format_movement_proof(proof))
+                }),
                 control_feedback.map_or_else(String::new, |message| format!("\n\n{message}")),
                 )
             },
@@ -447,23 +450,44 @@ fn format_acceptance(
             let proof = snapshot.movement_proof;
             let detail = proof.map_or_else(
                 || "No proof oracle available".to_owned(),
-                |proof| format!(
-                    "EXPECTED map {}  {:.2}  {:.2}\nOBSERVED {}\nDELTA {} / tolerance {:.2}m\nSOURCE fresh reconnect LOGIN_VERIFY_WORLD",
-                    proof.expected.map_id,
-                    proof.expected.east,
-                    proof.expected.north,
-                    proof.observed.map_or_else(|| "waiting".to_owned(), |pose| format!("map {}  {:.2}  {:.2}", pose.map_id, pose.east, pose.north)),
-                    proof.delta_metres().map_or_else(|| "map mismatch".to_owned(), |delta| format!("{delta:.3}m")),
-                    proof.tolerance_metres,
-                ),
+                format_movement_proof,
             );
-            (format!("PERSISTED MOVEMENT PROOF\n\n{detail}\n\nInput is frozen; old transport and cipher are discarded before reconnect."), false)
+            let passed = proof.is_some_and(client_session::MovementProofEvidence::passed);
+            (
+                format!(
+                    "{}\n\n{detail}\n\nInput is frozen; old transport and cipher are discarded before reconnect.",
+                    if passed { "PASS  PERSISTED MOVEMENT PROOF" } else { "PERSISTED MOVEMENT PROOF" }
+                ),
+                passed,
+            )
         }
         DisplayPhase::Offline | DisplayPhase::Entering(_) => (
             "WAITING FOR ENTRY\n\nConnect & Enter starts one complete configured operation.\n\nInput stays gated until the realm reaches MovementReady.".to_owned(),
             false,
         ),
     }
+}
+
+fn format_movement_proof(proof: client_session::MovementProofEvidence) -> String {
+    format!(
+        "EXPECTED map {}  {:.2}  {:.2}  {:.2}  heading {:.2}\nOBSERVED {}\nDELTA {} / tolerance {:.2}m\nSOURCE fresh reconnect LOGIN_VERIFY_WORLD",
+        proof.expected.map_id,
+        proof.expected.east,
+        proof.expected.north,
+        proof.expected.elevation,
+        proof.expected.orientation,
+        proof.observed.map_or_else(
+            || "waiting".to_owned(),
+            |pose| format!(
+                "map {}  {:.2}  {:.2}  {:.2}  heading {:.2}",
+                pose.map_id, pose.east, pose.north, pose.elevation, pose.orientation
+            )
+        ),
+        proof
+            .delta_metres()
+            .map_or_else(|| "map mismatch".to_owned(), |delta| format!("{delta:.3}m")),
+        proof.tolerance_metres,
+    )
 }
 
 fn format_event_tail(view: &DiagnosticView) -> String {
@@ -503,11 +527,14 @@ fn format_event_tail(view: &DiagnosticView) -> String {
 
 #[cfg(test)]
 mod tests {
-    use client_session::{ClientEvent, ClientEventKind, ClientSnapshot, SanitizedIdentity};
+    use client_session::{
+        ClientEvent, ClientEventKind, ClientPhase, ClientSnapshot, MovementProofEvidence,
+        ProofStage, SanitizedIdentity, WorldPose,
+    };
 
     use crate::{DiagnosticMode, DiagnosticView};
 
-    use super::{format_event_tail, format_pose};
+    use super::{format_acceptance, format_event_tail, format_movement_proof, format_pose};
 
     #[test]
     fn semantic_event_tail_contains_no_credential_vocabulary() {
@@ -534,5 +561,51 @@ mod tests {
         let output = format_pose("REALM-OBSERVED POSE", None);
         assert!(output.contains("NOT AVAILABLE"));
         assert!(!output.contains("map 0"));
+    }
+
+    #[test]
+    fn completed_persisted_proof_is_presented_as_pass() {
+        let identity = SanitizedIdentity::new(1, "Realm", "Character", 12_340).unwrap();
+        let pose = WorldPose::origin(0);
+        let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.phase = ClientPhase::ProvingMovement(ProofStage::Comparing);
+        snapshot.movement_proof = Some(MovementProofEvidence {
+            expected: pose,
+            observed: Some(pose),
+            tolerance_metres: 0.25,
+        });
+        let (text, accepted) = format_acceptance(&snapshot, true, None);
+        assert!(accepted);
+        assert!(text.starts_with("PASS  PERSISTED MOVEMENT PROOF"));
+    }
+
+    #[test]
+    fn failed_persisted_proof_shows_complete_expected_and_observed_pose_evidence() {
+        let expected = WorldPose {
+            map_id: 0,
+            east: 12.25,
+            north: -4.5,
+            elevation: 83.53,
+            orientation: 1.57,
+        };
+        let observed = WorldPose {
+            map_id: 1,
+            east: 9.0,
+            north: -3.0,
+            elevation: 90.0,
+            orientation: 0.25,
+        };
+        let text = format_movement_proof(MovementProofEvidence {
+            expected,
+            observed: Some(observed),
+            tolerance_metres: 0.25,
+        });
+        for value in [
+            "12.25", "-4.50", "83.53", "1.57", "9.00", "-3.00", "90.00", "0.25",
+        ] {
+            assert!(text.contains(value), "missing {value} from {text}");
+        }
+        assert!(text.contains("map mismatch"));
+        assert!(text.contains("fresh reconnect LOGIN_VERIFY_WORLD"));
     }
 }

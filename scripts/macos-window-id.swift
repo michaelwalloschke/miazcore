@@ -15,11 +15,15 @@ guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[S
 }
 
 for window in windows {
-    guard window[kCGWindowOwnerPID as String] as? Int32 == pid,
+    // CoreGraphics bridges these numeric fields as NSNumber. Direct `as? Int`
+    // or `as? Int32` casts are not stable across Swift/Foundation runtimes.
+    guard let ownerPID = window[kCGWindowOwnerPID as String] as? NSNumber,
+          ownerPID.int32Value == pid,
           window[kCGWindowName as String] as? String == title,
-          window[kCGWindowLayer as String] as? Int == 0,
-          let identifier = window[kCGWindowNumber as String] as? UInt32 else { continue }
-    print(identifier)
+          let layer = window[kCGWindowLayer as String] as? NSNumber,
+          layer.intValue == 0,
+          let identifier = window[kCGWindowNumber as String] as? NSNumber else { continue }
+    print(identifier.uint32Value)
     exit(0)
 }
 fputs("exact Diagnostic World window was not found\n", stderr)

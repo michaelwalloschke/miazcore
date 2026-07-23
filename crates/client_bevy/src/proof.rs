@@ -33,6 +33,7 @@ enum RenderProofMode {
     LiveEntry,
     LiveMovement,
     PersistedMovement,
+    PersistedMovementRejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +93,17 @@ impl RenderProofPlugin {
             backend: CaptureBackend::External,
         }
     }
+
+    /// Live negative probe: prove that an ineligible short move is rejected
+    /// before logout or reconnect can be attempted.
+    #[must_use]
+    pub fn persisted_movement_short_negative_external(output: impl Into<PathBuf>) -> Self {
+        Self {
+            output: output.into(),
+            mode: RenderProofMode::PersistedMovementRejected,
+            backend: CaptureBackend::External,
+        }
+    }
 }
 
 impl Plugin for RenderProofPlugin {
@@ -99,6 +111,7 @@ impl Plugin for RenderProofPlugin {
         app.insert_resource(RenderProofState {
             output: self.output.clone(),
             ready: self.output.with_extension("ready"),
+            stage: self.output.with_extension("stage"),
             frame: 0,
             requested: false,
             ready_written: false,
@@ -125,6 +138,7 @@ impl Plugin for RenderProofPlugin {
 struct RenderProofState {
     output: PathBuf,
     ready: PathBuf,
+    stage: PathBuf,
     frame: u32,
     requested: bool,
     ready_written: bool,
@@ -161,6 +175,9 @@ fn script_render_proof(
     if proof.ready.exists() {
         fs::remove_file(&proof.ready).expect("old proof ready marker should be replaceable");
     }
+    if proof.stage.exists() {
+        fs::remove_file(&proof.stage).expect("old proof stage marker should be replaceable");
+    }
     match proof.mode {
         RenderProofMode::Offline => {
             presentation.set_proof_pose();
@@ -168,7 +185,8 @@ fn script_render_proof(
         }
         RenderProofMode::LiveEntry
         | RenderProofMode::LiveMovement
-        | RenderProofMode::PersistedMovement => {
+        | RenderProofMode::PersistedMovement
+        | RenderProofMode::PersistedMovementRejected => {
             assert!(
                 session.is_live_entry(),
                 "live proof requires a live entry session"
@@ -199,6 +217,7 @@ fn capture_render_proof(
         RenderProofMode::LiveEntry
             | RenderProofMode::LiveMovement
             | RenderProofMode::PersistedMovement
+            | RenderProofMode::PersistedMovementRejected
     ) && proof.ready_frame.is_none()
     {
         match view.snapshot().phase {
@@ -215,6 +234,11 @@ fn capture_render_proof(
                         )
                         .expect("live movement proof should accept start intent");
                     proof.movement_started_at = Some(Instant::now());
+                } else if proof.mode == RenderProofMode::PersistedMovementRejected {
+                    // A zero-distance stopped pose is the deterministic lower
+                    // boundary of the less-than-two-metre eligibility rule.
+                    proof.movement_stopped = true;
+                    proof.capture_not_before = Some(Instant::now() + Duration::from_millis(500));
                 } else {
                     proof.capture_not_before = Some(Instant::now() + PRESENTATION_SETTLE_DELAY);
                 }
@@ -233,7 +257,9 @@ fn capture_render_proof(
     }
     if matches!(
         proof.mode,
-        RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement
+        RenderProofMode::LiveMovement
+            | RenderProofMode::PersistedMovement
+            | RenderProofMode::PersistedMovementRejected
     ) && !proof.movement_stopped
         && !proof.verification_requested
     {
@@ -253,8 +279,15 @@ fn capture_render_proof(
         }
         if proof.movement_started_at.is_some_and(|started| {
             started.elapsed()
-                >= if proof.mode == RenderProofMode::PersistedMovement {
-                    Duration::from_millis(450)
+                >= if matches!(
+                    proof.mode,
+                    RenderProofMode::PersistedMovement | RenderProofMode::PersistedMovementRejected
+                ) {
+                    if proof.mode == RenderProofMode::PersistedMovementRejected {
+                        Duration::from_millis(100)
+                    } else {
+                        Duration::from_millis(450)
+                    }
                 } else {
                     PRESENTATION_SETTLE_DELAY
                 }
@@ -268,37 +301,86 @@ fn capture_render_proof(
             return;
         }
     }
-    if proof.mode == RenderProofMode::PersistedMovement {
-        match view.snapshot().phase {
-            client_session::ClientPhase::MovementReady if proof.movement_stopped => {
-                session
-                    .verify_persisted_movement()
-                    .expect("persisted proof should accept the semantic verification operation");
-                proof.verification_requested = true;
-                return;
-            }
-            client_session::ClientPhase::ProvingMovement(client_session::ProofStage::Comparing)
-                if view
-                    .snapshot()
-                    .movement_proof
-                    .is_some_and(client_session::MovementProofEvidence::passed) => {}
-            client_session::ClientPhase::Failed(_) => {
-                panic!(
+    if matches!(
+        proof.mode,
+        RenderProofMode::PersistedMovement | RenderProofMode::PersistedMovementRejected
+    ) {
+        // The negative renderer must continue to the compositor capture after
+        // submitting its one deliberately ineligible operation. The sidecar
+        // validator, not rendering timing, asserts the rejection evidence.
+        let short_move_rejected = proof.mode == RenderProofMode::PersistedMovementRejected
+            && proof.verification_requested;
+        if short_move_rejected && !proof.ready_written {
+            fs::write(&proof.ready, "miazcore external compositor capture ready\n")
+                .expect("negative proof ready marker should be writable");
+            info!(
+                "external compositor capture ready at {}",
+                proof.ready.display()
+            );
+            proof.ready_written = true;
+        }
+        if !short_move_rejected {
+            match view.snapshot().phase {
+                client_session::ClientPhase::MovementReady
+                    if proof.movement_stopped && !proof.verification_requested =>
+                {
+                    fs::write(&proof.stage, "begin-movement-proof\n")
+                        .expect("proof stage marker should be writable");
+                    session.verify_persisted_movement().expect(
+                        "persisted proof should accept the semantic verification operation",
+                    );
+                    proof.verification_requested = true;
+                    return;
+                }
+                client_session::ClientPhase::MovementReady
+                    if proof.mode == RenderProofMode::PersistedMovementRejected
+                        && proof.verification_requested => {}
+                client_session::ClientPhase::ProvingMovement(
+                    client_session::ProofStage::Comparing,
+                ) if proof.mode == RenderProofMode::PersistedMovement
+                    && view
+                        .snapshot()
+                        .movement_proof
+                        .is_some_and(client_session::MovementProofEvidence::passed) => {}
+                client_session::ClientPhase::ProvingMovement(
+                    client_session::ProofStage::Reconnecting,
+                ) if proof.mode == RenderProofMode::PersistedMovement => {
+                    fs::write(&proof.stage, "reconnecting\n")
+                        .expect("proof reconnect stage marker should be writable");
+                    return;
+                }
+                client_session::ClientPhase::Failed(_)
+                    if proof.mode == RenderProofMode::PersistedMovementRejected => {}
+                client_session::ClientPhase::Failed(_) => panic!(
                     "persisted movement proof failed before fresh reconnect comparison: {:?}",
                     view.snapshot().latest_failure
-                )
+                ),
+                _ if proof.frame > TIMEOUT_FRAME => {
+                    panic!("timed out while waiting for persisted movement proof")
+                }
+                _ => return,
             }
-            _ if proof.frame > TIMEOUT_FRAME => {
-                panic!("timed out while waiting for persisted movement proof")
-            }
-            _ => return,
         }
+    }
+    // A persisted-movement image is evidence of the *completed* fresh-session
+    // comparison.  Do not arm an external compositor capture while logout or
+    // reconnect is still in flight: an injected reconnect failure must reach
+    // the explicit proof failure boundary, rather than timing out waiting for
+    // an image that cannot yet substantiate the proof.
+    if proof.mode == RenderProofMode::PersistedMovement
+        && !matches!(
+            view.snapshot().phase,
+            client_session::ClientPhase::ProvingMovement(client_session::ProofStage::Comparing)
+        )
+    {
+        return;
     }
     let capture_frame = match proof.mode {
         RenderProofMode::Offline => CAPTURE_FRAME,
         RenderProofMode::LiveEntry
         | RenderProofMode::LiveMovement
-        | RenderProofMode::PersistedMovement => proof
+        | RenderProofMode::PersistedMovement
+        | RenderProofMode::PersistedMovementRejected => proof
             .ready_frame
             .expect("live proof is armed only after MovementReady")
             .saturating_add(CAPTURE_FRAME),
@@ -316,13 +398,16 @@ fn capture_render_proof(
                 .snapshot()
                 .movement_proof
                 .is_some_and(client_session::MovementProofEvidence::passed);
+        let expected_short_rejection = proof.mode == RenderProofMode::PersistedMovementRejected;
         if matches!(
             proof.mode,
             RenderProofMode::LiveEntry
                 | RenderProofMode::LiveMovement
                 | RenderProofMode::PersistedMovement
+                | RenderProofMode::PersistedMovementRejected
         ) && view.snapshot().phase != client_session::ClientPhase::MovementReady
             && !persisted_comparison_complete
+            && !expected_short_rejection
         {
             panic!("retained world session failed before proof sidecar could be written");
         }
@@ -424,11 +509,14 @@ fn live_proof_sidecar(
             "  \"rendered_pose\": {},\n",
             "  \"submitted_pose\": {},\n",
             "  \"realm_observed_pose\": {},\n",
+            "  \"failure_context\": {},\n",
             "  \"movement_proof\": {}\n",
             "}}\n"
         ),
         json_string(if mode == RenderProofMode::PersistedMovement {
             "PersistedMovementCompared"
+        } else if mode == RenderProofMode::PersistedMovementRejected {
+            "PersistedMovementRejected"
         } else {
             "MovementReady"
         }),
@@ -438,7 +526,12 @@ fn live_proof_sidecar(
         snapshot
             .run_speed
             .expect("MovementReady has a positive run speed"),
-        if matches!(mode, RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement) {
+        if matches!(
+            mode,
+            RenderProofMode::LiveMovement
+                | RenderProofMode::PersistedMovement
+                | RenderProofMode::PersistedMovementRejected
+        ) {
             "bounded-ground"
         } else {
             "disabled"
@@ -448,6 +541,10 @@ fn live_proof_sidecar(
         pose_json(rendered),
         pose_json(submitted),
         pose_json(observed),
+        snapshot.latest_failure.as_ref().map_or_else(
+            || "null".to_owned(),
+            |failure| json_string(failure.context()),
+        ),
         snapshot.movement_proof.map_or_else(
             || "null".to_owned(),
             |proof| format!(

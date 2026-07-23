@@ -879,7 +879,7 @@ mod tests {
 
     fn public_error_formats() -> String {
         format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             IdentityError::Empty,
             IdentityError::TooLong,
             IdentityError::ControlCharacter,
@@ -887,6 +887,7 @@ mod tests {
             MovementIntentError::NonFinite,
             BoundaryError::ControlBackpressure,
             BoundaryError::EventBackpressure,
+            BoundaryError::InputGated,
             BoundaryError::WorkerStopped,
             BoundaryError::WorkerPanicked,
             ConfigError::InvalidIdentity(IdentityError::Empty),

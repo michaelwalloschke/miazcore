@@ -14,7 +14,7 @@ project="${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}"
 compose+=(--project-name "$project")
 
 usage() {
-    echo "usage: $0 {init-secrets|up|down|health|smoke|reset-state|reset-all} [--yes]" >&2
+    echo "usage: $0 {init-secrets|up|down|health|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
     exit 64
 }
 
@@ -81,6 +81,15 @@ case "${1:-}" in
         "$0" health
         ;;
     down) "${compose[@]}" down --remove-orphans ;;
+    # Test-only, local proof fault injection. These commands deliberately
+    # affect only the World endpoint; auth and the database remain running so
+    # a reconnect failure cannot be mistaken for a credentials failure.
+    stop-worldserver) "${compose[@]}" stop worldserver ;;
+    start-worldserver)
+        require_secrets
+        "${compose[@]}" up --detach --wait --wait-timeout 180 worldserver
+        "$0" health
+        ;;
     health)
         require_secrets
         "${compose[@]}" ps --all

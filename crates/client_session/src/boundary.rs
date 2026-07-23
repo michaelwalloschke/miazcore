@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt,
+    path::PathBuf,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -20,6 +21,7 @@ use crate::{
 pub enum BoundaryError {
     ControlBackpressure,
     EventBackpressure,
+    InputGated,
     WorkerStopped,
     WorkerPanicked,
 }
@@ -32,6 +34,9 @@ impl fmt::Display for BoundaryError {
             }
             Self::EventBackpressure => {
                 formatter.write_str("event queue reached its lossless capacity")
+            }
+            Self::InputGated => {
+                formatter.write_str("movement input is gated while a proof is in progress")
             }
             Self::WorkerStopped => formatter.write_str("session worker has stopped"),
             Self::WorkerPanicked => formatter.write_str("session worker panicked"),
@@ -64,6 +69,7 @@ pub(crate) struct SessionClient {
     control: SyncSender<ControlCommand>,
     events: Mutex<Receiver<ClientEvent>>,
     movement: Arc<Mutex<MovementIntent>>,
+    proof_input_frozen: Arc<AtomicBool>,
     snapshot: Arc<RwLock<ClientSnapshot>>,
     counters: Arc<BoundaryCounters>,
     shutdown: Arc<AtomicBool>,
@@ -99,16 +105,26 @@ impl SessionClient {
         &self,
         intent: MovementIntent,
     ) -> Result<(), BoundaryError> {
-        let was_engaged = {
-            let mut movement = self.movement.lock().expect("movement mailbox poisoned");
-            let was_engaged = movement.engaged();
-            *movement = intent;
-            was_engaged
-        };
+        if self.proof_input_frozen.load(Ordering::Acquire) {
+            return Err(BoundaryError::InputGated);
+        }
+        let mut movement = self.movement.lock().expect("movement mailbox poisoned");
+        // The proof worker sets this gate before it drains the FIFO. Checking
+        // under the same mailbox lock makes a racing input either visible to
+        // that drain or rejected without publishing a new transition.
+        if self.proof_input_frozen.load(Ordering::Acquire) {
+            return Err(BoundaryError::InputGated);
+        }
+        let was_engaged = movement.engaged();
+        *movement = intent;
+        drop(movement);
         self.counters
             .movement_revision
             .fetch_add(1, Ordering::AcqRel);
         if was_engaged != intent.engaged() {
+            if self.proof_input_frozen.load(Ordering::Acquire) {
+                return Err(BoundaryError::InputGated);
+            }
             self.send_control(ControlCommand::MovementTransition {
                 engaged: intent.engaged(),
             })?;
@@ -153,8 +169,10 @@ pub(crate) struct WorkerBoundary {
     shutdown: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
     movement: Arc<Mutex<MovementIntent>>,
+    proof_input_frozen: Arc<AtomicBool>,
     last_submitted_was_stop: bool,
     event_sequence: u64,
+    proof_stage_output: Option<PathBuf>,
 }
 
 impl WorkerBoundary {
@@ -173,9 +191,16 @@ impl WorkerBoundary {
         self.shutdown.load(Ordering::Acquire)
     }
 
-    pub(crate) fn discard_pending_controls(&self) {
-        while self.control.try_recv().is_ok() {
+    /// Remove stale movement edges after a proof has frozen input. A queued
+    /// disconnect is never input: retain its semantic effect by setting the
+    /// shutdown boundary so the active loop exits before it can begin a new
+    /// proof/reconnect operation.
+    pub(crate) fn discard_stale_movement_controls(&self) {
+        while let Ok(command) = self.control.try_recv() {
             self.counters.control_queued.fetch_sub(1, Ordering::AcqRel);
+            if command == ControlCommand::Disconnect {
+                self.shutdown.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -184,6 +209,9 @@ impl WorkerBoundary {
     }
 
     pub(crate) fn begin_movement_proof(&mut self) -> Option<WorldPose> {
+        // Freeze before examining the oracle. A concurrent publisher either
+        // observes this gate or is reduced to idle before this function exits.
+        self.proof_input_frozen.store(true, Ordering::Release);
         let mut current = self.snapshot.write().expect("client snapshot poisoned");
         let anchor = current.entry_anchor?;
         let expected = current.submitted_pose?;
@@ -192,6 +220,7 @@ impl WorkerBoundary {
             || !self.last_submitted_was_stop
             || self.latest_movement_intent().engaged()
         {
+            self.proof_input_frozen.store(false, Ordering::Release);
             return None;
         }
         current.movement_proof = Some(MovementProofEvidence {
@@ -205,6 +234,10 @@ impl WorkerBoundary {
             .fetch_add(1, Ordering::AcqRel);
         drop(current);
         *self.movement.lock().expect("movement mailbox poisoned") = MovementIntent::idle();
+        // Movement edges after BeginMovementProof belong to a now-invalid
+        // input epoch. A concurrent disconnect remains a shutdown request,
+        // which the caller observes before it starts logout or reconnect.
+        self.discard_stale_movement_controls();
         self.publish(ClientEventKind::PhaseChanged {
             phase: ClientPhase::ProvingMovement(ProofStage::SavingLogout),
         })
@@ -212,7 +245,21 @@ impl WorkerBoundary {
     }
 
     pub(crate) fn proof_stage(&mut self, stage: ProofStage) -> bool {
+        if stage == ProofStage::Reconnecting
+            && let Some(path) = &self.proof_stage_output
+        {
+            let _ = std::fs::write(path, "reconnecting\n");
+        }
         self.transition(ClientPhase::ProvingMovement(stage))
+    }
+
+    /// Return the test-only external release marker associated with a
+    /// repository-local proof-stage marker. Normal sessions have no such
+    /// marker and therefore cannot be paused by this adapter.
+    pub(crate) fn reconnect_release_marker(&self) -> Option<PathBuf> {
+        self.proof_stage_output
+            .as_ref()
+            .map(|stage| stage.with_extension("ack"))
     }
 
     pub(crate) fn observe_reconnect_pose(&mut self, pose: WorldPose) -> bool {
@@ -299,6 +346,18 @@ impl WorkerBoundary {
     }
 
     pub(crate) fn movement_ready(&mut self, run_speed: f32) -> bool {
+        // A reconnect reaches MovementReady before the outer proof worker
+        // compares its fresh pose. Keep its input gate closed throughout that
+        // interval; only explicit retry (or a newly ordinary session) opens it.
+        let proof_active = self
+            .snapshot
+            .read()
+            .expect("client snapshot poisoned")
+            .movement_proof
+            .is_some();
+        if !proof_active {
+            self.proof_input_frozen.store(false, Ordering::Release);
+        }
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.run_speed = Some(run_speed);
@@ -347,6 +406,7 @@ impl WorkerBoundary {
 
     pub(crate) fn reset_for_retry(&mut self) {
         self.last_submitted_was_stop = false;
+        self.proof_input_frozen.store(false, Ordering::Release);
         let mut current = self.snapshot.write().expect("client snapshot poisoned");
         current.phase = ClientPhase::Offline;
         current.discovered_realm = None;
@@ -426,7 +486,8 @@ impl WorkerBoundary {
             Err(
                 BoundaryError::WorkerStopped
                 | BoundaryError::WorkerPanicked
-                | BoundaryError::ControlBackpressure,
+                | BoundaryError::ControlBackpressure
+                | BoundaryError::InputGated,
             ) => false,
         }
     }
@@ -435,10 +496,18 @@ impl WorkerBoundary {
 pub(crate) fn new_boundary(
     identity: SanitizedIdentity,
 ) -> Result<(SessionClient, WorkerBoundary), BoundaryError> {
+    new_boundary_with_proof_stage(identity, None)
+}
+
+pub(crate) fn new_boundary_with_proof_stage(
+    identity: SanitizedIdentity,
+    proof_stage_output: Option<PathBuf>,
+) -> Result<(SessionClient, WorkerBoundary), BoundaryError> {
     let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_CAPACITY);
     let (event_sender, event_receiver) = mpsc::sync_channel(EVENT_CAPACITY);
     let counters = Arc::new(BoundaryCounters::default());
     let movement = Arc::new(Mutex::new(MovementIntent::idle()));
+    let proof_input_frozen = Arc::new(AtomicBool::new(false));
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_stopped = Arc::new(AtomicBool::new(false));
     let snapshot = Arc::new(RwLock::new(ClientSnapshot::offline(identity.clone())));
@@ -467,6 +536,7 @@ pub(crate) fn new_boundary(
             control: control_sender,
             events: Mutex::new(event_receiver),
             movement: Arc::clone(&movement),
+            proof_input_frozen: Arc::clone(&proof_input_frozen),
             snapshot: Arc::clone(&snapshot),
             counters: Arc::clone(&counters),
             shutdown: Arc::clone(&shutdown),
@@ -480,8 +550,10 @@ pub(crate) fn new_boundary(
             shutdown,
             worker_stopped,
             movement,
+            proof_input_frozen,
             last_submitted_was_stop: false,
             event_sequence: 2,
+            proof_stage_output,
         },
     ))
 }
@@ -541,7 +613,10 @@ fn push_diagnostic(snapshot: &mut ClientSnapshot, create: impl FnOnce(u64) -> Se
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc::{self, TrySendError};
+    use std::{
+        sync::mpsc::{self, TrySendError},
+        time::Duration,
+    };
 
     use crate::{
         ClientEventKind, ClientPhase, ControlCommand, EVENT_CAPACITY, FailureCategory,
@@ -662,6 +737,102 @@ mod tests {
         ));
         assert!(worker.begin_movement_proof().is_none());
         assert!(client.snapshot().movement_proof.is_none());
+    }
+
+    #[test]
+    fn persisted_movement_proof_gates_new_input_at_the_session_boundary() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose::origin(0);
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(
+            crate::WorldPose {
+                east: 2.0,
+                ..anchor
+            },
+            true
+        ));
+        assert!(worker.begin_movement_proof().is_some());
+        let before = client.snapshot().queue_counters.movement_revision;
+
+        assert_eq!(
+            client.publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap()),
+            Err(BoundaryError::InputGated)
+        );
+        assert_eq!(client.snapshot().queue_counters.movement_revision, before);
+        assert!(!worker.latest_movement_intent().engaged());
+    }
+
+    #[test]
+    fn persisted_movement_proof_keeps_input_gated_through_reconnect_ready_and_comparison() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose::origin(0);
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(
+            crate::WorldPose {
+                east: 2.0,
+                ..anchor
+            },
+            true
+        ));
+        assert!(worker.begin_movement_proof().is_some());
+        assert!(worker.movement_ready(7.0));
+        assert!(worker.proof_stage(crate::ProofStage::Comparing));
+
+        assert_eq!(
+            client.publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap()),
+            Err(BoundaryError::InputGated)
+        );
+        assert!(!worker.latest_movement_intent().engaged());
+    }
+
+    #[test]
+    fn persisted_movement_proof_discards_stale_transition_before_reconnect() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose::origin(0);
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(
+            crate::WorldPose {
+                east: 2.0,
+                ..anchor
+            },
+            true
+        ));
+        // This models an input edge that was queued after the proof button but
+        // before the worker acquired the control FIFO again.
+        client
+            .send_control(ControlCommand::MovementTransition { engaged: true })
+            .unwrap();
+
+        assert!(worker.begin_movement_proof().is_some());
+        assert_eq!(
+            worker.receive_control(Duration::ZERO),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert_eq!(client.snapshot().queue_counters.control_queued, 0);
+        assert!(!worker.latest_movement_intent().engaged());
+    }
+
+    #[test]
+    fn persisted_movement_proof_preserves_a_queued_disconnect_as_shutdown() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose::origin(0);
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(
+            crate::WorldPose {
+                east: 2.0,
+                ..anchor
+            },
+            true
+        ));
+        client.send_control(ControlCommand::Disconnect).unwrap();
+
+        assert!(worker.begin_movement_proof().is_some());
+        assert!(worker.is_shutdown());
+        assert_eq!(
+            worker.receive_control(Duration::ZERO),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert_eq!(client.snapshot().queue_counters.control_queued, 0);
     }
 
     #[test]
