@@ -1,7 +1,7 @@
 # Predict and Submit Bounded Ground Movement
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Enter the Live Diagnostic World through Bevy](16-enter-live-diagnostic-world.md)
 
 ## Parent
@@ -52,3 +52,7 @@ Publish camera-relative intent through the latest-value mailbox. Implement deter
 - Keep the Windows compile tripwire green without claiming Windows runtime acceptance.
 - Keep protocol incompatibilities contained inside `client_protocol`; do not widen generated types or fork dependencies.
 - Work and verify this ticket on one candidate, then run `/code-review` and commit before advancing the frontier.
+
+## Comments
+
+- 2026-07-23: Implementation is in progress on `ebc9bba757a19170cbb85ceb28b4ae97c45ffb54`. The retained receive/correction subslice and both compositor proofs pass, but post-review fake-clock/failure coverage and live turning/post-stop socket-health evidence remain open. This ticket is deliberately not resolved.

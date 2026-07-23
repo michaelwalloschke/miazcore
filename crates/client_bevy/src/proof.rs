@@ -96,6 +96,7 @@ impl Plugin for RenderProofPlugin {
             ready_frame: None,
             capture_not_before: None,
             movement_started_at: None,
+            movement_turned: false,
             movement_stopped: false,
             mode: self.mode,
             backend: self.backend,
@@ -120,6 +121,7 @@ struct RenderProofState {
     ready_frame: Option<u32>,
     capture_not_before: Option<Instant>,
     movement_started_at: Option<Instant>,
+    movement_turned: bool,
     movement_stopped: bool,
     mode: RenderProofMode,
     backend: CaptureBackend,
@@ -168,6 +170,7 @@ fn script_render_proof(
     proof.scripted = true;
 }
 
+#[allow(clippy::too_many_lines)] // one explicit proof lifecycle keeps capture sequencing auditable
 fn capture_render_proof(
     mut commands: Commands,
     mut proof: ResMut<RenderProofState>,
@@ -207,6 +210,19 @@ fn capture_render_proof(
         }
     }
     if proof.mode == RenderProofMode::LiveMovement && !proof.movement_stopped {
+        if !proof.movement_turned
+            && proof
+                .movement_started_at
+                .is_some_and(|started| started.elapsed() >= Duration::from_secs(1))
+        {
+            session
+                .publish_movement_intent(
+                    client_session::MovementIntent::planar(0.0, 1.0)
+                        .expect("finite proof turn intent"),
+                )
+                .expect("live movement proof should accept turn intent");
+            proof.movement_turned = true;
+        }
         if proof
             .movement_started_at
             .is_some_and(|started| started.elapsed() >= PRESENTATION_SETTLE_DELAY)
@@ -231,6 +247,13 @@ fn capture_render_proof(
         .capture_not_before
         .is_some_and(|not_before| Instant::now() >= not_before);
     if proof.requested && proof.output.exists() {
+        if matches!(
+            proof.mode,
+            RenderProofMode::LiveEntry | RenderProofMode::LiveMovement
+        ) && view.snapshot().phase != client_session::ClientPhase::MovementReady
+        {
+            panic!("retained world session failed before proof sidecar could be written");
+        }
         let sidecar = proof_sidecar(&view, &presentation, proof.mode);
         fs::write(proof.output.with_extension("json"), sidecar)
             .expect("proof sidecar should be writable");

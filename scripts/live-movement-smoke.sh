@@ -63,6 +63,8 @@ if predicted != submitted:
     raise SystemExit("live movement smoke failed: submitted pose is not the latest predicted pose")
 if abs(submitted["east"] - anchor["east"]) > 5.0 or abs(submitted["north"] - anchor["north"]) > 5.0:
     raise SystemExit("live movement smoke failed: submitted pose exceeded the five-metre bounded envelope")
+if abs(submitted["east"] - anchor["east"]) < 0.1 or abs(submitted["north"] - anchor["north"]) < 0.1:
+    raise SystemExit("live movement smoke failed: proof did not show both movement directions")
 print(f"live movement smoke passed: {width}x{height} Metal image and bounded client-written pose remain distinct from realm observation")
 PY
 

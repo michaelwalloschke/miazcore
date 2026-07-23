@@ -59,7 +59,7 @@ impl DiagnosticPresentation {
         self.rendered_pose
     }
 
-    fn project_authoritative_entry(
+    fn project_live_presentation(
         &mut self,
         snapshot: &client_session::ClientSnapshot,
         delta_seconds: f32,
@@ -73,18 +73,22 @@ impl DiagnosticPresentation {
             self.rendered_planar = Vec2::ZERO;
             self.heading = anchor.orientation;
         }
+        let predicted = snapshot.predicted_pose.unwrap_or(anchor);
         let target = snapshot
             .correction_target
-            .map(client_session::CorrectionTarget::pose)
-            .or(snapshot.predicted_pose)
-            .unwrap_or(anchor);
+            .map_or(predicted, client_session::CorrectionTarget::pose);
         let current = self.rendered_pose.unwrap_or(anchor);
+        if snapshot.correction_target.is_some() && target.map_id != predicted.map_id {
+            self.rendered_pose = Some(target);
+            self.rendered_planar = Vec2::ZERO;
+            self.heading = target.orientation;
+            return;
+        }
         if target.map_id != anchor.map_id {
             return;
         }
         let correction_requires_snap = snapshot.correction_target.is_some()
-            && (current.map_id != target.map_id
-                || planar_distance(current, target) >= CORRECTION_SNAP_DISTANCE_METRES);
+            && planar_distance(predicted, target) >= CORRECTION_SNAP_DISTANCE_METRES;
         if correction_requires_snap {
             self.apply_rendered_pose(anchor, target);
             return;
@@ -284,7 +288,7 @@ fn project_authoritative_entry(
     time: Res<Time>,
 ) {
     if view.is_live_entry() {
-        presentation.project_authoritative_entry(view.snapshot(), time.delta_secs());
+        presentation.project_live_presentation(view.snapshot(), time.delta_secs());
     }
 }
 
@@ -412,7 +416,7 @@ mod tests {
             ..anchor
         }));
         let mut presentation = DiagnosticPresentation::default();
-        presentation.project_authoritative_entry(&snapshot, 0.25);
+        presentation.project_live_presentation(&snapshot, 0.25);
         assert_eq!(
             presentation.rendered_pose.unwrap().east.to_bits(),
             2.0_f32.to_bits()
@@ -422,11 +426,38 @@ mod tests {
             east: 7.0,
             ..anchor
         }));
-        presentation.project_authoritative_entry(&snapshot, 0.01);
+        presentation.project_live_presentation(&snapshot, 0.01);
         assert_eq!(
             presentation.rendered_pose.unwrap().east.to_bits(),
             7.0_f32.to_bits()
         );
         assert_eq!(snapshot.realm_observed_pose, None);
+    }
+
+    #[test]
+    fn scripted_correction_snaps_on_map_change_without_relabelling_realm_observation() {
+        let identity = SanitizedIdentity::new(1, "Realm", "Character", 12_340).unwrap();
+        let anchor = WorldPose {
+            map_id: 0,
+            east: 1.0,
+            north: 2.0,
+            elevation: 3.0,
+            orientation: 0.0,
+        };
+        let target = WorldPose {
+            map_id: 1,
+            east: 9.0,
+            ..anchor
+        };
+        let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.entry_anchor = Some(anchor);
+        snapshot.predicted_pose = Some(anchor);
+        snapshot.realm_observed_pose = Some(anchor);
+        snapshot.correction_target = Some(CorrectionTarget::scripted(target));
+        let mut presentation = DiagnosticPresentation::default();
+        presentation.project_live_presentation(&snapshot, 0.01);
+        assert_eq!(presentation.rendered_pose, Some(target));
+        assert_eq!(presentation.rendered_planar, bevy::prelude::Vec2::ZERO);
+        assert_eq!(snapshot.realm_observed_pose, Some(anchor));
     }
 }
