@@ -239,16 +239,21 @@ fn update_diagnostics(
                     )
                 };
                 let anchor = format_pose("ENTRY ANCHOR", snapshot.entry_anchor);
+                let predicted = format_pose("PREDICTED POSE", snapshot.predicted_pose);
                 let submitted = format_pose("SUBMITTED POSE", snapshot.submitted_pose);
                 let observed = format_pose("REALM-OBSERVED POSE", snapshot.realm_observed_pose);
+                let correction = snapshot.correction_target.map_or_else(
+                    || "SCRIPTED CORRECTION\nNOT ACTIVE".to_owned(),
+                    |target| format_pose("SCRIPTED CORRECTION", Some(target.pose())),
+                );
                 text.0 = format!(
-                    "IDENTITY & POSES\n\n{rendered}\n\n{anchor}\n\n{submitted}\n\n{observed}\n\nRUN SPEED\n{}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\n{}",
+                    "IDENTITY & POSES\n\n{rendered}\n\n{anchor}\n\n{predicted}\n\n{submitted}\n\n{observed}\n\n{correction}\n\nRUN SPEED\n{}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\n{}",
                     format_run_speed(snapshot.run_speed),
                     counters.control_queued,
                     counters.event_queued,
                     counters.movement_revision,
                     if view.is_live_entry() {
-                        "MOVEMENT PUBLICATION DISABLED"
+                        "BOUNDED GROUND MOVEMENT\nNo realm acceptance or persistence claim"
                     } else {
                         "NO SOCKETS / NO PACKETS"
                     },
@@ -358,7 +363,9 @@ fn format_session_ladder(phase: DisplayPhase, live_entry: bool) -> String {
         };
         let _ = writeln!(output, "{marker}  {stage}");
     }
-    output.push_str("\nOne configured entry operation.\nNo movement publication in this slice.");
+    output.push_str(
+        "\nOne configured entry operation.\nBounded ground movement only; persistence is deferred.",
+    );
     output
 }
 
@@ -368,7 +375,7 @@ fn format_connect_action(phase: DisplayPhase, live_entry: bool) -> String {
     }
     match phase {
         DisplayPhase::Offline => "CONNECT & ENTER\nREFERENCE REALM".to_owned(),
-        DisplayPhase::MovementReady => "MOVEMENT READY\nInput remains gated".to_owned(),
+        DisplayPhase::MovementReady => "MOVEMENT READY\nWASD BOUNDED MOVEMENT".to_owned(),
         DisplayPhase::Failed => "RETRY ENTRY\nREFERENCE REALM".to_owned(),
         DisplayPhase::Entering(_) | DisplayPhase::Proving => {
             "ENTERING REFERENCE REALM\nPlease wait".to_owned()
@@ -393,7 +400,7 @@ fn format_acceptance(
     }
     match display_phase(&snapshot.phase) {
         DisplayPhase::MovementReady => (
-            "PASS  MOVEMENT-READY ENTRY\n\nEntry Anchor and Realm-observed Pose are live.\n\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nMovement intent and packets remain disabled.".to_owned(),
+            "PASS  MOVEMENT-READY ENTRY\n\nWASD  bounded ground movement\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nSubmitted pose is client-written only. Realm acceptance and persistence remain unproven.".to_owned(),
             true,
         ),
         DisplayPhase::Failed => (
@@ -402,7 +409,7 @@ fn format_acceptance(
                     unreachable!("display phase only reports failure for failed snapshots");
                 };
                 format!(
-                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nRETRY ENTRY restarts one complete configured operation.\nInput stays gated. No movement packet was sent.{}",
+                "ENTRY FAILED\n\n{:?} / {:?}\n\n{}\n\nRETRY ENTRY restarts one complete configured operation.\nInput stays gated. Submitted pose evidence, if present, remains available.{}",
                 recovery.category,
                 recovery.action,
                 snapshot
@@ -443,6 +450,7 @@ fn format_event_tail(view: &DiagnosticView) -> String {
             ),
             ClientEventKind::PoseObserved { source, .. } => format!("pose observed / {source:?}"),
             ClientEventKind::MovementSubmitted { .. } => "movement submitted".to_owned(),
+            ClientEventKind::ScriptedCorrection { .. } => "scripted correction target".to_owned(),
             ClientEventKind::CommandRejected { command, failure } => format!(
                 "{command:?} rejected / {:?} / {}",
                 failure.category(),

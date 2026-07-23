@@ -1,5 +1,5 @@
 use crate::{
-    ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig,
+    ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
     boundary::BoundaryError,
     headless::{HeadlessEvidence, HeadlessSession},
     runtime::WorkerTarget,
@@ -57,6 +57,16 @@ impl MovementReadySession {
         self.0.drain_events()
     }
 
+    /// Replace the latest movement direction and losslessly enqueue an edge
+    /// transition when it changes between moving and idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker can no longer accept a transition.
+    pub fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        self.0.publish_movement_intent(intent)
+    }
+
     /// Join a successful or explicitly disconnected worker and return evidence.
     ///
     /// After a failed attempt, the caller must first send `RetryEntry` or
@@ -82,9 +92,8 @@ impl MovementReadySession {
 /// Engine-independent session retained at `MovementReady` for Bevy projection.
 ///
 /// The worker still performs exactly the same complete `StartEntry` operation as
-/// [`MovementReadySession`], but it keeps the sanitized `MovementReady` state
-/// visible until the application explicitly disconnects. Movement publication is
-/// intentionally unavailable in this capability.
+/// [`MovementReadySession`], but it retains the authenticated World transport
+/// for the bounded on-ground movement capability.
 pub struct LiveDiagnosticSession(HeadlessSession);
 
 impl LiveDiagnosticSession {
@@ -99,8 +108,8 @@ impl LiveDiagnosticSession {
 
     /// Send a lossless semantic control command to the worker.
     ///
-    /// The live Diagnostic World accepts `StartEntry` and `Disconnect`; movement
-    /// controls remain unavailable until a later capability.
+    /// The live Diagnostic World accepts `StartEntry`, `Disconnect`, and
+    /// bounded movement intent after it reaches `MovementReady`.
     ///
     /// # Errors
     ///
@@ -117,6 +126,16 @@ impl LiveDiagnosticSession {
     #[must_use]
     pub fn drain_events(&self) -> Vec<ClientEvent> {
         self.0.drain_events()
+    }
+
+    /// Replace the latest movement direction and losslessly enqueue an edge
+    /// transition when it changes between moving and idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker can no longer accept a transition.
+    pub fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        self.0.publish_movement_intent(intent)
     }
 
     /// Request a clean disconnect and join the worker.

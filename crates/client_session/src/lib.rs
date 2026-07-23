@@ -6,6 +6,7 @@ mod character;
 mod config;
 mod headless;
 mod machine;
+mod movement;
 mod movement_ready;
 mod offline;
 mod realm;
@@ -13,9 +14,10 @@ mod runtime;
 
 pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
-    ControlCommand, DiscoveredRealm, EntryStage, FailureCategory, IdentityError, MovementIntent,
-    MovementIntentError, PoseSource, ProofStage, QueueCounters, Recovery, RecoveryAction,
-    SanitizedIdentity, SanitizedText, SelectedCharacter, SemanticDiagnostic, WorldPose,
+    ControlCommand, CorrectionTarget, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,
+    MovementIntent, MovementIntentError, PoseSource, ProofStage, QueueCounters, Recovery,
+    RecoveryAction, SanitizedIdentity, SanitizedText, SelectedCharacter, SemanticDiagnostic,
+    WorldPose,
 };
 pub use boundary::BoundaryError;
 pub use character::{CharacterSelectionEvidence, CharacterSelectionSession};

@@ -18,6 +18,7 @@ pub enum HeaderDirection {
 }
 
 /// Stateful Wrath header cipher. World-session integration is intentionally deferred.
+#[derive(Clone)]
 pub struct HeaderCipher {
     state: [u8; 256],
     i: u8,

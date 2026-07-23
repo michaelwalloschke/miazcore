@@ -65,6 +65,11 @@ fn run() -> Result<(), StartupError> {
             1.0 / 60.0,
         )))
         .add_plugins(RenderProofPlugin::external(output, true));
+    } else if let Some(output) = arguments.live_movement_external_proof_output {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::live_movement_external(output));
     }
 
     app.run();
@@ -77,6 +82,7 @@ struct Arguments {
     live_proof_output: Option<PathBuf>,
     external_proof_output: Option<PathBuf>,
     live_external_proof_output: Option<PathBuf>,
+    live_movement_external_proof_output: Option<PathBuf>,
     offline: bool,
 }
 
@@ -89,11 +95,13 @@ impl Arguments {
                 || argument == "--live-proof-output"
                 || argument == "--external-proof-output"
                 || argument == "--live-external-proof-output"
+                || argument == "--live-movement-external-proof-output"
             {
                 if parsed.proof_output.is_some()
                     || parsed.live_proof_output.is_some()
                     || parsed.external_proof_output.is_some()
                     || parsed.live_external_proof_output.is_some()
+                    || parsed.live_movement_external_proof_output.is_some()
                 {
                     return Err(StartupError::DuplicateProofOutput);
                 }
@@ -107,6 +115,8 @@ impl Arguments {
                     parsed.proof_output = output;
                 } else if argument == "--live-proof-output" {
                     parsed.live_proof_output = output;
+                } else if argument == "--live-movement-external-proof-output" {
+                    parsed.live_movement_external_proof_output = output;
                 } else if argument == "--external-proof-output" {
                     parsed.external_proof_output = output;
                 } else {
@@ -122,7 +132,9 @@ impl Arguments {
             }
         }
         if parsed.offline
-            && (parsed.live_proof_output.is_some() || parsed.live_external_proof_output.is_some())
+            && (parsed.live_proof_output.is_some()
+                || parsed.live_external_proof_output.is_some()
+                || parsed.live_movement_external_proof_output.is_some())
         {
             return Err(StartupError::OfflineLiveConflict);
         }
@@ -207,6 +219,17 @@ mod tests {
             .unwrap(),
             Arguments {
                 proof_output: Some("artifacts/offline.png".into()),
+                ..Arguments::default()
+            }
+        );
+        assert_eq!(
+            Arguments::parse([
+                OsString::from("--live-movement-external-proof-output"),
+                OsString::from("artifacts/live-movement.png"),
+            ])
+            .unwrap(),
+            Arguments {
+                live_movement_external_proof_output: Some("artifacts/live-movement.png".into()),
                 ..Arguments::default()
             }
         );

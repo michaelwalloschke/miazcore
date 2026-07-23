@@ -11,9 +11,9 @@ use std::{
 
 use crate::{
     CONTROL_CAPACITY, ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot,
-    CommandKind, ControlCommand, DiscoveredRealm, EVENT_CAPACITY, FailureCategory, MovementIntent,
-    PoseSource, QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter,
-    SemanticDiagnostic, WorldPose,
+    CommandKind, ControlCommand, CorrectionTarget, DiscoveredRealm, EVENT_CAPACITY,
+    FailureCategory, MovementIntent, PoseSource, QueueCounters, Recovery, RecoveryAction,
+    SanitizedIdentity, SelectedCharacter, SemanticDiagnostic, WorldPose,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,7 +63,7 @@ impl BoundaryCounters {
 pub(crate) struct SessionClient {
     control: SyncSender<ControlCommand>,
     events: Mutex<Receiver<ClientEvent>>,
-    movement: Mutex<MovementIntent>,
+    movement: Arc<Mutex<MovementIntent>>,
     snapshot: Arc<RwLock<ClientSnapshot>>,
     counters: Arc<BoundaryCounters>,
     shutdown: Arc<AtomicBool>,
@@ -95,11 +95,25 @@ impl SessionClient {
         }
     }
 
-    pub(crate) fn publish_movement_intent(&self, intent: MovementIntent) {
-        *self.movement.lock().expect("movement mailbox poisoned") = intent;
+    pub(crate) fn publish_movement_intent(
+        &self,
+        intent: MovementIntent,
+    ) -> Result<(), BoundaryError> {
+        let was_engaged = {
+            let mut movement = self.movement.lock().expect("movement mailbox poisoned");
+            let was_engaged = movement.engaged();
+            *movement = intent;
+            was_engaged
+        };
         self.counters
             .movement_revision
             .fetch_add(1, Ordering::AcqRel);
+        if was_engaged != intent.engaged() {
+            self.send_control(ControlCommand::MovementTransition {
+                engaged: intent.engaged(),
+            })?;
+        }
+        Ok(())
     }
 
     pub(crate) fn drain_events(&self) -> Vec<ClientEvent> {
@@ -138,6 +152,7 @@ pub(crate) struct WorkerBoundary {
     counters: Arc<BoundaryCounters>,
     shutdown: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
+    movement: Arc<Mutex<MovementIntent>>,
     event_sequence: u64,
 }
 
@@ -161,6 +176,10 @@ impl WorkerBoundary {
         while self.control.try_recv().is_ok() {
             self.counters.control_queued.fetch_sub(1, Ordering::AcqRel);
         }
+    }
+
+    pub(crate) fn latest_movement_intent(&self) -> MovementIntent {
+        *self.movement.lock().expect("movement mailbox poisoned")
     }
 
     pub(crate) fn transition(&mut self, phase: ClientPhase) -> bool {
@@ -229,6 +248,40 @@ impl WorkerBoundary {
         self.transition(ClientPhase::MovementReady)
     }
 
+    pub(crate) fn predict_movement(&mut self, pose: WorldPose) {
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
+        current.predicted_pose = Some(pose);
+        self.counters
+            .snapshot_revision
+            .fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn movement_submitted(&mut self, pose: WorldPose) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.submitted_pose = Some(pose);
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish(ClientEventKind::MovementSubmitted { pose })
+    }
+
+    /// Publish a scripted correction target without mutating realm-observed
+    /// truth.  The retained wire protocol deliberately has no correction
+    /// decoder in this slice.
+    #[allow(dead_code)] // exercised by the internal scripted-correction test boundary
+    pub(crate) fn scripted_correction_target(&mut self, target: CorrectionTarget) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.correction_target = Some(target);
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish(ClientEventKind::ScriptedCorrection { target })
+    }
+
     pub(crate) fn reset_for_retry(&mut self) {
         let mut current = self.snapshot.write().expect("client snapshot poisoned");
         current.phase = ClientPhase::Offline;
@@ -238,6 +291,7 @@ impl WorkerBoundary {
         current.predicted_pose = None;
         current.submitted_pose = None;
         current.realm_observed_pose = None;
+        current.correction_target = None;
         current.run_speed = None;
         current.latest_failure = None;
         self.counters
@@ -319,6 +373,7 @@ pub(crate) fn new_boundary(
     let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_CAPACITY);
     let (event_sender, event_receiver) = mpsc::sync_channel(EVENT_CAPACITY);
     let counters = Arc::new(BoundaryCounters::default());
+    let movement = Arc::new(Mutex::new(MovementIntent::idle()));
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_stopped = Arc::new(AtomicBool::new(false));
     let snapshot = Arc::new(RwLock::new(ClientSnapshot::offline(identity.clone())));
@@ -346,7 +401,7 @@ pub(crate) fn new_boundary(
         SessionClient {
             control: control_sender,
             events: Mutex::new(event_receiver),
-            movement: Mutex::new(MovementIntent::idle()),
+            movement: Arc::clone(&movement),
             snapshot: Arc::clone(&snapshot),
             counters: Arc::clone(&counters),
             shutdown: Arc::clone(&shutdown),
@@ -359,6 +414,7 @@ pub(crate) fn new_boundary(
             counters,
             shutdown,
             worker_stopped,
+            movement,
             event_sequence: 2,
         },
     ))
@@ -452,9 +508,38 @@ mod tests {
     #[test]
     fn latest_movement_mailbox_replaces_steady_intent() {
         let (client, _worker) = new_boundary(identity()).unwrap();
-        client.publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap());
-        client.publish_movement_intent(MovementIntent::planar(0.0, -1.0).unwrap());
+        client
+            .publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
+        client
+            .publish_movement_intent(MovementIntent::planar(0.0, -1.0).unwrap())
+            .unwrap();
         assert_eq!(client.snapshot().queue_counters.movement_revision, 2);
+    }
+
+    #[test]
+    fn scripted_correction_never_relabels_realm_observed_pose() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let entry = crate::WorldPose {
+            map_id: 0,
+            east: 1.0,
+            north: 2.0,
+            elevation: 3.0,
+            orientation: 0.0,
+        };
+        let target = crate::WorldPose { east: 4.0, ..entry };
+        assert!(worker.observe_entry_anchor(entry));
+        assert!(worker.scripted_correction_target(crate::CorrectionTarget::scripted(target)));
+
+        let snapshot = client.snapshot();
+        assert_eq!(snapshot.realm_observed_pose, Some(entry));
+        assert_eq!(snapshot.correction_target.unwrap().pose(), target);
+        assert!(
+            client
+                .drain_events()
+                .iter()
+                .any(|event| matches!(event.kind, ClientEventKind::ScriptedCorrection { .. }))
+        );
     }
 
     #[test]

@@ -345,6 +345,7 @@ pub enum ClientPhase {
 pub enum CommandKind {
     StartEntry,
     BeginMovementProof,
+    MovementTransition,
     Disconnect,
     RetryEntry,
 }
@@ -353,6 +354,7 @@ pub enum CommandKind {
 pub enum ControlCommand {
     StartEntry,
     BeginMovementProof,
+    MovementTransition { engaged: bool },
     Disconnect,
     RetryEntry,
 }
@@ -363,6 +365,7 @@ impl ControlCommand {
         match self {
             Self::StartEntry => CommandKind::StartEntry,
             Self::BeginMovementProof => CommandKind::BeginMovementProof,
+            Self::MovementTransition { .. } => CommandKind::MovementTransition,
             Self::Disconnect => CommandKind::Disconnect,
             Self::RetryEntry => CommandKind::RetryEntry,
         }
@@ -385,9 +388,9 @@ impl Error for MovementIntentError {}
 /// Latest replaceable planar movement intent in world coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovementIntent {
-    pub east: f32,
-    pub north: f32,
-    pub engaged: bool,
+    east: f32,
+    north: f32,
+    engaged: bool,
 }
 
 impl MovementIntent {
@@ -419,6 +422,21 @@ impl MovementIntent {
             north: north / scale,
             engaged: true,
         })
+    }
+
+    #[must_use]
+    pub const fn east(self) -> f32 {
+        self.east
+    }
+
+    #[must_use]
+    pub const fn north(self) -> f32 {
+        self.north
+    }
+
+    #[must_use]
+    pub const fn engaged(self) -> bool {
+        self.engaged
     }
 }
 
@@ -474,6 +492,27 @@ pub enum PoseSource {
     Correction,
 }
 
+/// A deliberately internal-to-the-learning-client correction input.
+///
+/// This represents scripted test evidence only.  It is not a claim that the
+/// Reference Realm accepted, persisted, or even transmitted this pose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CorrectionTarget {
+    pose: WorldPose,
+}
+
+impl CorrectionTarget {
+    #[must_use]
+    pub const fn scripted(pose: WorldPose) -> Self {
+        Self { pose }
+    }
+
+    #[must_use]
+    pub const fn pose(self) -> WorldPose {
+        self.pose
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientEventKind {
     PhaseChanged {
@@ -494,6 +533,9 @@ pub enum ClientEventKind {
     },
     MovementSubmitted {
         pose: WorldPose,
+    },
+    ScriptedCorrection {
+        target: CorrectionTarget,
     },
     CommandRejected {
         command: CommandKind,
@@ -558,6 +600,7 @@ pub struct ClientSnapshot {
     pub predicted_pose: Option<WorldPose>,
     pub submitted_pose: Option<WorldPose>,
     pub realm_observed_pose: Option<WorldPose>,
+    pub correction_target: Option<CorrectionTarget>,
     pub run_speed: Option<f32>,
     pub queue_counters: QueueCounters,
     pub latest_failure: Option<ClientFailure>,
@@ -576,6 +619,7 @@ impl ClientSnapshot {
             predicted_pose: None,
             submitted_pose: None,
             realm_observed_pose: None,
+            correction_target: None,
             run_speed: None,
             queue_counters: QueueCounters::default(),
             latest_failure: None,
@@ -615,9 +659,9 @@ mod tests {
             MovementIntent::idle()
         );
         let intent = MovementIntent::planar(3.0, 4.0).unwrap();
-        assert!((intent.east - 0.6).abs() < f32::EPSILON);
-        assert!((intent.north - 0.8).abs() < f32::EPSILON);
-        assert!(intent.engaged);
+        assert!((intent.east() - 0.6).abs() < f32::EPSILON);
+        assert!((intent.north() - 0.8).abs() < f32::EPSILON);
+        assert!(intent.engaged());
         assert!(MovementIntent::planar(f32::NAN, 0.0).is_err());
     }
 

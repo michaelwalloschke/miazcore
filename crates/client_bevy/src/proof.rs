@@ -31,6 +31,7 @@ pub struct RenderProofPlugin {
 enum RenderProofMode {
     Offline,
     LiveEntry,
+    LiveMovement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +73,15 @@ impl RenderProofPlugin {
             backend: CaptureBackend::External,
         }
     }
+
+    #[must_use]
+    pub fn live_movement_external(output: impl Into<PathBuf>) -> Self {
+        Self {
+            output: output.into(),
+            mode: RenderProofMode::LiveMovement,
+            backend: CaptureBackend::External,
+        }
+    }
 }
 
 impl Plugin for RenderProofPlugin {
@@ -85,6 +95,8 @@ impl Plugin for RenderProofPlugin {
             scripted: false,
             ready_frame: None,
             capture_not_before: None,
+            movement_started_at: None,
+            movement_stopped: false,
             mode: self.mode,
             backend: self.backend,
         })
@@ -96,6 +108,7 @@ impl Plugin for RenderProofPlugin {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent proof lifecycle latches
 #[derive(Resource)]
 struct RenderProofState {
     output: PathBuf,
@@ -106,6 +119,8 @@ struct RenderProofState {
     scripted: bool,
     ready_frame: Option<u32>,
     capture_not_before: Option<Instant>,
+    movement_started_at: Option<Instant>,
+    movement_stopped: bool,
     mode: RenderProofMode,
     backend: CaptureBackend,
 }
@@ -137,7 +152,7 @@ fn script_render_proof(
             presentation.set_proof_pose();
             camera.set_proof_view();
         }
-        RenderProofMode::LiveEntry => {
+        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement => {
             assert!(
                 session.is_live_entry(),
                 "live proof requires a live entry session"
@@ -158,14 +173,29 @@ fn capture_render_proof(
     mut proof: ResMut<RenderProofState>,
     presentation: Res<DiagnosticPresentation>,
     view: Res<DiagnosticView>,
+    session: Res<SessionBridge>,
     mut exit: MessageWriter<AppExit>,
 ) {
     proof.frame += 1;
-    if proof.mode == RenderProofMode::LiveEntry && proof.ready_frame.is_none() {
+    if matches!(
+        proof.mode,
+        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement
+    ) && proof.ready_frame.is_none()
+    {
         match view.snapshot().phase {
             client_session::ClientPhase::MovementReady => {
                 proof.ready_frame = Some(proof.frame);
-                proof.capture_not_before = Some(Instant::now() + PRESENTATION_SETTLE_DELAY);
+                if proof.mode == RenderProofMode::LiveMovement {
+                    session
+                        .publish_movement_intent(
+                            client_session::MovementIntent::planar(1.0, 0.0)
+                                .expect("finite proof intent"),
+                        )
+                        .expect("live movement proof should accept start intent");
+                    proof.movement_started_at = Some(Instant::now());
+                } else {
+                    proof.capture_not_before = Some(Instant::now() + PRESENTATION_SETTLE_DELAY);
+                }
             }
             client_session::ClientPhase::Failed(_) => {
                 panic!("live proof session failed before MovementReady")
@@ -176,9 +206,23 @@ fn capture_render_proof(
             _ => return,
         }
     }
+    if proof.mode == RenderProofMode::LiveMovement && !proof.movement_stopped {
+        if proof
+            .movement_started_at
+            .is_some_and(|started| started.elapsed() >= PRESENTATION_SETTLE_DELAY)
+        {
+            session
+                .publish_movement_intent(client_session::MovementIntent::idle())
+                .expect("live movement proof should accept stop intent");
+            proof.movement_stopped = true;
+            proof.capture_not_before = Some(Instant::now() + Duration::from_millis(500));
+        } else {
+            return;
+        }
+    }
     let capture_frame = match proof.mode {
         RenderProofMode::Offline => CAPTURE_FRAME,
-        RenderProofMode::LiveEntry => proof
+        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement => proof
             .ready_frame
             .expect("live proof is armed only after MovementReady")
             .saturating_add(CAPTURE_FRAME),
@@ -187,7 +231,7 @@ fn capture_render_proof(
         .capture_not_before
         .is_some_and(|not_before| Instant::now() >= not_before);
     if proof.requested && proof.output.exists() {
-        let sidecar = proof_sidecar(&view, &presentation);
+        let sidecar = proof_sidecar(&view, &presentation, proof.mode);
         fs::write(proof.output.with_extension("json"), sidecar)
             .expect("proof sidecar should be writable");
         info!("rendered proof saved to {}", proof.output.display());
@@ -218,9 +262,13 @@ fn capture_render_proof(
     }
 }
 
-fn proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentation) -> String {
+fn proof_sidecar(
+    view: &DiagnosticView,
+    presentation: &DiagnosticPresentation,
+    mode: RenderProofMode,
+) -> String {
     if view.is_live_entry() {
-        return live_proof_sidecar(view, presentation);
+        return live_proof_sidecar(view, presentation, mode == RenderProofMode::LiveMovement);
     }
     let snapshot = view.snapshot();
     let character = json_string(snapshot.identity.character_name());
@@ -246,7 +294,11 @@ fn proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentation) -
     )
 }
 
-fn live_proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentation) -> String {
+fn live_proof_sidecar(
+    view: &DiagnosticView,
+    presentation: &DiagnosticPresentation,
+    movement_publication: bool,
+) -> String {
     let snapshot = view.snapshot();
     let anchor = snapshot
         .entry_anchor
@@ -260,6 +312,7 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentati
     let submitted = snapshot
         .submitted_pose
         .expect("MovementReady retains the initial Submitted Pose");
+    let predicted = snapshot.predicted_pose.unwrap_or(anchor);
     format!(
         concat!(
             "{{\n",
@@ -270,8 +323,9 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentati
             "  \"client_build\": {},\n",
             "  \"character\": {},\n",
             "  \"run_speed\": {:.3},\n",
-            "  \"movement_publication\": \"disabled\",\n",
+            "  \"movement_publication\": \"{}\",\n",
             "  \"entry_anchor\": {},\n",
+            "  \"predicted_pose\": {},\n",
             "  \"rendered_pose\": {},\n",
             "  \"submitted_pose\": {},\n",
             "  \"realm_observed_pose\": {}\n",
@@ -283,7 +337,13 @@ fn live_proof_sidecar(view: &DiagnosticView, presentation: &DiagnosticPresentati
         snapshot
             .run_speed
             .expect("MovementReady has a positive run speed"),
+        if movement_publication {
+            "bounded-ground"
+        } else {
+            "disabled"
+        },
         pose_json(anchor),
+        pose_json(predicted),
         pose_json(rendered),
         pose_json(submitted),
         pose_json(observed),
@@ -327,7 +387,7 @@ mod tests {
 
     use crate::{DiagnosticMode, DiagnosticPresentation, DiagnosticView};
 
-    use super::{json_string, proof_sidecar};
+    use super::{RenderProofMode, json_string, proof_sidecar};
 
     #[test]
     fn sidecar_is_semantic_offline_evidence_without_secret_fields() {
@@ -346,6 +406,7 @@ mod tests {
                 entry_anchor: None,
                 rendered_pose: None,
             },
+            RenderProofMode::Offline,
         );
 
         assert!(sidecar.contains("\"phase\": \"Offline\""));
@@ -362,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn live_sidecar_keeps_entry_pose_truths_distinct_and_disables_movement() {
+    fn live_sidecar_keeps_entry_pose_truths_distinct_and_bounds_movement_claims() {
         let identity =
             SanitizedIdentity::new(1, "Miazcore Reference Realm", "Miaztest", 12_340).unwrap();
         let anchor = WorldPose {
@@ -391,6 +452,7 @@ mod tests {
                 entry_anchor: Some(anchor),
                 rendered_pose: Some(anchor),
             },
+            RenderProofMode::LiveEntry,
         );
 
         assert!(sidecar.contains("\"phase\": \"MovementReady\""));

@@ -255,6 +255,13 @@ impl DiagnosticSession for FakeLiveSession {
         Ok(())
     }
 
+    fn publish_movement_intent(
+        &self,
+        _intent: client_session::MovementIntent,
+    ) -> Result<(), BoundaryError> {
+        Ok(())
+    }
+
     fn diagnostic_mode(&self) -> DiagnosticMode {
         DiagnosticMode::LiveEntry
     }

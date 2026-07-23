@@ -59,6 +59,80 @@ impl WorldServerStream {
     ) -> Result<WorldServerFrame, ProtocolError> {
         read_server_frame(reader, Some(&mut self.cipher))
     }
+
+    #[must_use]
+    pub fn into_incremental(self) -> IncrementalWorldServerDecoder {
+        IncrementalWorldServerDecoder {
+            cipher: self.cipher,
+            buffered: Vec::new(),
+        }
+    }
+}
+
+/// Incremental encrypted World-frame decoder for retained sessions.
+///
+/// Cipher state advances only after a complete encrypted header has arrived,
+/// so arbitrary socket fragmentation cannot desynchronize the stream.
+pub struct IncrementalWorldServerDecoder {
+    cipher: HeaderCipher,
+    buffered: Vec<u8>,
+}
+
+impl IncrementalWorldServerDecoder {
+    #[must_use]
+    pub fn new(session_key: &[u8; 40]) -> Self {
+        Self {
+            cipher: HeaderCipher::new(HeaderDirection::ServerToClient, session_key),
+            buffered: Vec::new(),
+        }
+    }
+
+    /// Buffer received encrypted bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when buffering would exceed the World-frame limit.
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), ProtocolError> {
+        if self.buffered.len().saturating_add(bytes.len()) > MAX_WORLD_FRAME_SIZE + 5 {
+            return Err(ProtocolError::MalformedFrame);
+        }
+        self.buffered.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Yield one complete frame, or `None` until enough bytes have arrived.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed or over-limit frame headers.
+    pub fn next_frame(&mut self) -> Result<Option<WorldServerFrame>, ProtocolError> {
+        let Some(&first_ciphertext) = self.buffered.first() else {
+            return Ok(None);
+        };
+        let original_cipher = self.cipher.clone();
+        let mut preview = original_cipher.clone();
+        let mut first = [first_ciphertext];
+        preview.apply(&mut first);
+        let header_len = if first[0] & 0x80 != 0 { 5 } else { 4 };
+        if self.buffered.len() < header_len {
+            return Ok(None);
+        }
+        let mut header = self.buffered[..header_len].to_vec();
+        self.cipher.apply(&mut header);
+        let (size, opcode) = decode_server_header(&header)?;
+        let payload_len = size - 2;
+        let total_len = header_len.saturating_add(payload_len);
+        if self.buffered.len() < total_len {
+            // The cipher must not be committed until the full frame exists.
+            // Rebuild it from the same session key state by retaining the
+            // ciphertext and deferring commitment to a later call.
+            self.cipher = original_cipher;
+            return Ok(None);
+        }
+        let payload = self.buffered[header_len..total_len].to_vec();
+        self.buffered.drain(..total_len);
+        Ok(Some(WorldServerFrame { opcode, payload }))
+    }
 }
 
 impl fmt::Debug for WorldServerStream {
@@ -368,6 +442,24 @@ fn read_server_frame(
     Ok(WorldServerFrame { opcode, payload })
 }
 
+fn decode_server_header(header: &[u8]) -> Result<(usize, u16), ProtocolError> {
+    let (size, opcode) = match header {
+        [first, a, b, opcode_low, opcode_high] if first & 0x80 != 0 => (
+            (usize::from(first & 0x7f) << 16) | (usize::from(*a) << 8) | usize::from(*b),
+            u16::from_le_bytes([*opcode_low, *opcode_high]),
+        ),
+        [first, size_low, opcode_low, opcode_high] if first & 0x80 == 0 => (
+            (usize::from(*first) << 8) | usize::from(*size_low),
+            u16::from_le_bytes([*opcode_low, *opcode_high]),
+        ),
+        _ => return Err(ProtocolError::MalformedFrame),
+    };
+    if !(2..=MAX_WORLD_FRAME_SIZE).contains(&size) {
+        return Err(ProtocolError::MalformedFrame);
+    }
+    Ok((size, opcode))
+}
+
 fn apply_optional_cipher(cipher: &mut Option<&mut HeaderCipher>, bytes: &mut [u8]) {
     if let Some(cipher) = cipher.as_deref_mut() {
         cipher.apply(bytes);
@@ -398,6 +490,109 @@ fn read_array<const N: usize>(reader: &mut impl Read) -> Result<[u8; N], Protoco
     let mut bytes = [0_u8; N];
     reader.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)] // parsing helpers remain adjacent to production decoder code
+mod tests {
+    use super::IncrementalWorldServerDecoder;
+    use crate::{HeaderCipher, HeaderDirection};
+
+    const KEY: [u8; 40] = [7; 40];
+
+    fn encrypted_server_frame(opcode: u16, payload: &[u8]) -> Vec<u8> {
+        let size = u16::try_from(payload.len() + 2).unwrap();
+        let mut header = vec![size.to_be_bytes()[0], size.to_be_bytes()[1]];
+        header.extend_from_slice(&opcode.to_le_bytes());
+        HeaderCipher::new(HeaderDirection::ServerToClient, &KEY).apply(&mut header);
+        header.extend_from_slice(payload);
+        header
+    }
+
+    fn encrypted_server_frames(frames: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, &KEY);
+        let mut output = Vec::new();
+        for (opcode, payload) in frames {
+            let size = payload.len() + 2;
+            let mut header = if size > 0x7fff {
+                vec![
+                    0x80 | u8::try_from(size >> 16).unwrap(),
+                    u8::try_from(size >> 8).unwrap(),
+                    u8::try_from(size & 0xff).unwrap(),
+                    0,
+                    0,
+                ]
+            } else {
+                vec![
+                    u8::try_from(size >> 8).unwrap(),
+                    u8::try_from(size & 0xff).unwrap(),
+                    0,
+                    0,
+                ]
+            };
+            let opcode_offset = header.len() - 2;
+            header[opcode_offset..].copy_from_slice(&opcode.to_le_bytes());
+            cipher.apply(&mut header);
+            output.extend_from_slice(&header);
+            output.extend_from_slice(payload);
+        }
+        output
+    }
+
+    #[test]
+    fn incremental_decoder_keeps_cipher_aligned_across_fragmentation_and_coalescing() {
+        let first = encrypted_server_frame(0x1234, &[1, 2, 3]);
+        let second = encrypted_server_frame(0x5678, &[4]);
+        // The second header is encrypted after the first header's cipher bytes.
+        let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, &KEY);
+        let mut first_header = vec![0, 5, 0x34, 0x12];
+        cipher.apply(&mut first_header);
+        let mut second_header = vec![0, 3, 0x78, 0x56];
+        cipher.apply(&mut second_header);
+        let wire = [first_header, vec![1, 2, 3], second_header, vec![4]].concat();
+        assert_ne!(wire, [first, second].concat());
+        let mut decoder = IncrementalWorldServerDecoder::new(&KEY);
+        for byte in &wire[..5] {
+            decoder.push_bytes(&[*byte]).unwrap();
+            assert!(decoder.next_frame().unwrap().is_none());
+        }
+        decoder.push_bytes(&wire[5..]).unwrap();
+        let one = decoder.next_frame().unwrap().unwrap();
+        let two = decoder.next_frame().unwrap().unwrap();
+        assert_eq!((one.opcode(), one.payload()), (0x1234, &[1, 2, 3][..]));
+        assert_eq!((two.opcode(), two.payload()), (0x5678, &[4][..]));
+        assert!(decoder.next_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn incremental_decoder_defers_partial_payload_without_losing_following_cipher_alignment() {
+        let wire = encrypted_server_frames(&[(0x1111, vec![1, 2, 3]), (0x2222, vec![4, 5])]);
+        let mut decoder = IncrementalWorldServerDecoder::new(&KEY);
+        decoder.push_bytes(&wire[..5]).unwrap(); // complete header + one payload byte
+        assert!(decoder.next_frame().unwrap().is_none());
+        decoder.push_bytes(&wire[5..]).unwrap();
+        let first = decoder.next_frame().unwrap().unwrap();
+        let second = decoder.next_frame().unwrap().unwrap();
+        assert_eq!((first.opcode(), first.payload()), (0x1111, &[1, 2, 3][..]));
+        assert_eq!((second.opcode(), second.payload()), (0x2222, &[4, 5][..]));
+    }
+
+    #[test]
+    fn incremental_decoder_handles_large_headers_and_rejects_overflowed_buffering() {
+        let payload = vec![9; 32_766];
+        let wire = encrypted_server_frames(&[(0x1234, payload.clone())]);
+        let mut decoder = IncrementalWorldServerDecoder::new(&KEY);
+        for byte in &wire[..5] {
+            decoder.push_bytes(&[*byte]).unwrap();
+            assert!(decoder.next_frame().unwrap().is_none());
+        }
+        decoder.push_bytes(&wire[5..]).unwrap();
+        assert_eq!(
+            decoder.next_frame().unwrap().unwrap().payload(),
+            payload.as_slice()
+        );
+        assert!(decoder.push_bytes(&vec![0; 1024 * 1024 + 6]).is_err());
+    }
 }
 
 struct SliceCursor<'a> {

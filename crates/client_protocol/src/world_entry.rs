@@ -3,6 +3,12 @@ use flate2::{Decompress, FlushDecompress, Status};
 use crate::ProtocolError;
 
 pub const CMSG_PLAYER_LOGIN: u32 = 0x003d;
+/// Build-12340 movement opcodes are message opcodes: client and server share
+/// the same numeric value, while the direction is determined by the frame
+/// header.
+pub const MSG_MOVE_START_FORWARD: u32 = 0x00b5;
+pub const MSG_MOVE_STOP: u32 = 0x00b7;
+pub const MSG_MOVE_HEARTBEAT: u32 = 0x00ee;
 pub const SMSG_UPDATE_OBJECT: u16 = 0x00a9;
 pub const SMSG_FORCE_RUN_SPEED_CHANGE: u16 = 0x00e2;
 pub const CMSG_FORCE_RUN_SPEED_CHANGE_ACK: u32 = 0x00e3;
@@ -42,6 +48,7 @@ const REQUIRED_SELF_UPDATE_FLAGS: u16 =
     UPDATE_FLAG_SELF | UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION;
 
 const MOVEMENT_FLAG_ON_TRANSPORT: u32 = 0x0000_0200;
+const MOVEMENT_FLAG_FORWARD: u32 = 0x0000_0001;
 const MOVEMENT_FLAG_FALLING: u32 = 0x0000_1000;
 const MOVEMENT_FLAG_SWIMMING: u32 = 0x0020_0000;
 const MOVEMENT_FLAG_FLYING: u32 = 0x0200_0000;
@@ -121,6 +128,33 @@ pub struct AcoreMovementInfo {
 }
 
 impl AcoreMovementInfo {
+    /// Construct the deliberately narrow, on-ground movement state used by
+    /// the Learning Client.  Transport, falling, swimming, flying, pitch and
+    /// spline states remain unsupported by this capability.
+    #[must_use]
+    pub const fn ground(
+        timestamp: u32,
+        position: [f32; 3],
+        orientation: f32,
+        moving_forward: bool,
+    ) -> Self {
+        Self {
+            flags: if moving_forward {
+                MOVEMENT_FLAG_FORWARD
+            } else {
+                0
+            },
+            flags2: 0,
+            timestamp,
+            position,
+            orientation,
+            transport: None,
+            pitch: None,
+            fall_time_ms: 0,
+            jump: None,
+            spline_elevation: None,
+        }
+    }
     #[must_use]
     pub const fn flags(self) -> u32 {
         self.flags
@@ -160,6 +194,16 @@ impl AcoreMovementInfo {
     pub const fn with_timestamp(mut self, timestamp: u32) -> Self {
         self.timestamp = timestamp;
         self
+    }
+
+    /// Encode a validated outbound movement payload for a client movement
+    /// message.  This does not frame or encrypt the packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the movement state cannot be represented safely.
+    pub fn encode_for_client(self) -> Result<Vec<u8>, ProtocolError> {
+        self.encode()
     }
 
     fn decode(cursor: &mut Cursor<'_>) -> Result<Self, ProtocolError> {
@@ -295,6 +339,23 @@ impl AcoreMovementInfo {
         }
         Ok(self)
     }
+}
+
+/// Encode one complete client movement body: active mover packed GUID followed
+/// by its validated `MovementInfo` block.
+///
+/// # Errors
+///
+/// Returns an error when the movement payload contains invalid scalars.
+pub fn encode_client_movement(
+    active_mover: u64,
+    movement: AcoreMovementInfo,
+) -> Result<Vec<u8>, ProtocolError> {
+    let movement = movement.encode()?;
+    let mut output = Vec::with_capacity(9 + movement.len());
+    push_packed_guid(&mut output, active_mover);
+    output.extend_from_slice(&movement);
+    Ok(output)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -887,6 +948,7 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::{
         AcoreJumpInfo, AcoreMovementInfo, Cursor, MOVEMENT_FLAG_FALLING, SMSG_UPDATE_OBJECT,
+        encode_client_movement,
     };
 
     #[test]
@@ -916,5 +978,16 @@ mod tests {
         let mut cursor = Cursor::new(&encoded, SMSG_UPDATE_OBJECT);
         assert_eq!(AcoreMovementInfo::decode(&mut cursor).unwrap(), expected);
         cursor.finish().unwrap();
+    }
+
+    #[test]
+    fn client_ground_movement_prefixes_the_active_mover_packed_guid() {
+        let body = encode_client_movement(
+            0x0100_0000_0000_0007,
+            AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, true),
+        )
+        .unwrap();
+        assert_eq!(&body[..3], &[0x81, 0x07, 0x01]);
+        assert_eq!(u32::from_le_bytes(body[3..7].try_into().unwrap()), 1);
     }
 }

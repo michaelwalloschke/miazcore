@@ -49,7 +49,9 @@ fn credentials_enter_only_the_offline_session_boundary() {
     assert!(!formatted.contains("SYNTHETIC_ACCOUNT"));
     assert!(!formatted.contains("synthetic-password"));
 
-    session.publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap());
+    session
+        .publish_movement_intent(MovementIntent::planar(1.0, 0.0).unwrap())
+        .unwrap();
     let after_intent = session.snapshot();
     assert_eq!(after_intent.queue_counters.movement_revision, 1);
     assert!(after_intent.predicted_pose.is_none());

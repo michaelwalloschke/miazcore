@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use bevy::prelude::*;
 use client_session::{
     BoundaryError, ClientEvent, ClientSnapshot, ControlCommand, LiveDiagnosticSession,
-    OfflineSession,
+    MovementIntent, OfflineSession,
 };
 
 use crate::ClientScheduleSet;
@@ -23,6 +23,13 @@ pub trait DiagnosticSession: Send + Sync + 'static {
     ///
     /// Returns an error when the session cannot accept the command.
     fn send_control(&self, command: ControlCommand) -> Result<(), BoundaryError>;
+
+    /// Publish a replaceable movement intent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the boundary cannot retain an intent edge.
+    fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError>;
     fn diagnostic_mode(&self) -> DiagnosticMode;
 }
 
@@ -53,6 +60,10 @@ impl DiagnosticSession for OfflineSession {
         self.send_control(command)
     }
 
+    fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        OfflineSession::publish_movement_intent(self, intent)
+    }
+
     fn diagnostic_mode(&self) -> DiagnosticMode {
         DiagnosticMode::Offline
     }
@@ -69,6 +80,10 @@ impl DiagnosticSession for LiveDiagnosticSession {
 
     fn send_control(&self, command: ControlCommand) -> Result<(), BoundaryError> {
         self.send_control(command)
+    }
+
+    fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        LiveDiagnosticSession::publish_movement_intent(self, intent)
     }
 
     fn diagnostic_mode(&self) -> DiagnosticMode {
@@ -115,6 +130,16 @@ impl SessionBridge {
     /// bounded semantic command.
     pub fn retry_entry(&self) -> Result<(), BoundaryError> {
         self.session.send_control(ControlCommand::RetryEntry)
+    }
+
+    /// Publish replaceable camera-relative movement intent through the session
+    /// boundary.  Protocol serialization remains worker-owned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session worker cannot accept an intent edge.
+    pub fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        self.session.publish_movement_intent(intent)
     }
 }
 

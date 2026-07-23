@@ -1,7 +1,7 @@
 use std::thread::JoinHandle;
 
 use crate::{
-    ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig,
+    ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
     boundary::{BoundaryError, SessionClient, new_boundary},
     runtime::{self, WorkerTarget},
 };
@@ -51,6 +51,13 @@ impl HeadlessSession {
 
     pub(crate) fn drain_events(&self) -> Vec<ClientEvent> {
         self.client.drain_events()
+    }
+
+    pub(crate) fn publish_movement_intent(
+        &self,
+        intent: MovementIntent,
+    ) -> Result<(), BoundaryError> {
+        self.client.publish_movement_intent(intent)
     }
 
     pub(crate) fn wait(mut self) -> Result<HeadlessEvidence, BoundaryError> {

@@ -7,6 +7,8 @@ use crate::{ClientScheduleSet, DiagnosticView, camera::spawn_camera};
 const CYAN: Color = Color::srgb(0.41, 0.85, 0.86);
 const AMBER: Color = Color::srgb(0.94, 0.74, 0.41);
 const PARKED_MARKER_HEIGHT: f32 = -1_000.0;
+const CORRECTION_SNAP_DISTANCE_METRES: f32 = 5.0;
+const RENDER_RECONCILIATION_METRES_PER_SECOND: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Resource)]
 pub struct DiagnosticPresentation {
@@ -57,15 +59,67 @@ impl DiagnosticPresentation {
         self.rendered_pose
     }
 
-    fn project_authoritative_entry(&mut self, snapshot: &client_session::ClientSnapshot) {
+    fn project_authoritative_entry(
+        &mut self,
+        snapshot: &client_session::ClientSnapshot,
+        delta_seconds: f32,
+    ) {
         let Some(anchor) = snapshot.entry_anchor else {
             return;
         };
-        self.entry_anchor = Some(anchor);
-        self.rendered_pose = Some(anchor);
-        self.rendered_planar = Vec2::ZERO;
-        self.heading = anchor.orientation;
+        if self.entry_anchor != Some(anchor) {
+            self.entry_anchor = Some(anchor);
+            self.rendered_pose = Some(anchor);
+            self.rendered_planar = Vec2::ZERO;
+            self.heading = anchor.orientation;
+        }
+        let target = snapshot
+            .correction_target
+            .map(client_session::CorrectionTarget::pose)
+            .or(snapshot.predicted_pose)
+            .unwrap_or(anchor);
+        let current = self.rendered_pose.unwrap_or(anchor);
+        if target.map_id != anchor.map_id {
+            return;
+        }
+        let correction_requires_snap = snapshot.correction_target.is_some()
+            && (current.map_id != target.map_id
+                || planar_distance(current, target) >= CORRECTION_SNAP_DISTANCE_METRES);
+        if correction_requires_snap {
+            self.apply_rendered_pose(anchor, target);
+            return;
+        }
+        let distance = planar_distance(current, target);
+        let step = (RENDER_RECONCILIATION_METRES_PER_SECOND * delta_seconds).max(0.0);
+        let blend = if distance <= f32::EPSILON {
+            1.0
+        } else {
+            (step / distance).min(1.0)
+        };
+        let rendered = client_session::WorldPose {
+            map_id: target.map_id,
+            east: current.east + (target.east - current.east) * blend,
+            north: current.north + (target.north - current.north) * blend,
+            elevation: anchor.elevation,
+            orientation: current.orientation + (target.orientation - current.orientation) * blend,
+        };
+        self.apply_rendered_pose(anchor, rendered);
     }
+
+    fn apply_rendered_pose(
+        &mut self,
+        anchor: client_session::WorldPose,
+        rendered: client_session::WorldPose,
+    ) {
+        self.rendered_pose = Some(rendered);
+        self.rendered_planar =
+            Vec2::new(rendered.east - anchor.east, rendered.north - anchor.north);
+        self.heading = rendered.orientation;
+    }
+}
+
+fn planar_distance(left: client_session::WorldPose, right: client_session::WorldPose) -> f32 {
+    (left.east - right.east).hypot(left.north - right.north)
 }
 
 #[derive(Component)]
@@ -227,9 +281,10 @@ fn setup_diagnostic_world(
 fn project_authoritative_entry(
     view: Res<DiagnosticView>,
     mut presentation: ResMut<DiagnosticPresentation>,
+    time: Res<Time>,
 ) {
     if view.is_live_entry() {
-        presentation.project_authoritative_entry(view.snapshot());
+        presentation.project_authoritative_entry(view.snapshot(), time.delta_secs());
     }
 }
 
@@ -299,7 +354,7 @@ fn project_pose_markers(
 #[cfg(test)]
 mod tests {
     use bevy::prelude::Vec3;
-    use client_session::WorldPose;
+    use client_session::{ClientSnapshot, CorrectionTarget, SanitizedIdentity, WorldPose};
 
     use super::{
         DiagnosticPresentation, PARKED_MARKER_HEIGHT, rendered_avatar_translation,
@@ -338,5 +393,40 @@ mod tests {
             rendered_avatar_translation(&presentation, false),
             Vec3::new(0.0, 0.74, 0.0)
         );
+    }
+
+    #[test]
+    fn scripted_correction_smooths_below_five_metres_and_snaps_at_the_boundary() {
+        let identity = SanitizedIdentity::new(1, "Realm", "Character", 12_340).unwrap();
+        let anchor = WorldPose {
+            map_id: 0,
+            east: 0.0,
+            north: 0.0,
+            elevation: 0.0,
+            orientation: 0.0,
+        };
+        let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.entry_anchor = Some(anchor);
+        snapshot.correction_target = Some(CorrectionTarget::scripted(WorldPose {
+            east: 4.0,
+            ..anchor
+        }));
+        let mut presentation = DiagnosticPresentation::default();
+        presentation.project_authoritative_entry(&snapshot, 0.25);
+        assert_eq!(
+            presentation.rendered_pose.unwrap().east.to_bits(),
+            2.0_f32.to_bits()
+        );
+
+        snapshot.correction_target = Some(CorrectionTarget::scripted(WorldPose {
+            east: 7.0,
+            ..anchor
+        }));
+        presentation.project_authoritative_entry(&snapshot, 0.01);
+        assert_eq!(
+            presentation.rendered_pose.unwrap().east.to_bits(),
+            7.0_f32.to_bits()
+        );
+        assert_eq!(snapshot.realm_observed_pose, None);
     }
 }

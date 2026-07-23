@@ -8,18 +8,19 @@ use std::{
 
 use client_protocol::{
     AcoreMovementInfo, CMSG_CHAR_ENUM, CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_MOVE_SET_CAN_FLY_ACK,
-    CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, LoginChallengeResponse, LoginProofResponse,
-    ProtocolError, REALM_LIST_REQUEST, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM,
-    SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD,
-    SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, WorldAuthResponse,
-    WorldClientStream, WorldEntryLocation, WorldServerStream, calculate_srp_client_proof,
+    CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, IncrementalWorldServerDecoder, LoginChallengeResponse,
+    LoginProofResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, ProtocolError,
+    REALM_LIST_REQUEST, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
+    SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY,
+    SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, WorldAuthResponse, WorldClientStream,
+    WorldEntryLocation, WorldServerStream, calculate_srp_client_proof,
     decode_authoritative_self_update, decode_character_enumeration, decode_force_run_speed_change,
     decode_login_verify_world, decode_time_sync_request, decode_unset_can_fly,
     decode_unsupported_self_control_guid, decode_world_auth_challenge, decode_world_auth_response,
-    encode_force_run_speed_change_ack, encode_logon_challenge, encode_logon_proof,
-    encode_move_set_can_fly_ack, encode_player_login, encode_time_sync_response,
-    encode_world_auth_session_frame, read_logon_challenge_response, read_logon_proof_response,
-    read_plain_world_server_frame, read_realm_list_response,
+    encode_client_movement, encode_force_run_speed_change_ack, encode_logon_challenge,
+    encode_logon_proof, encode_move_set_can_fly_ack, encode_player_login,
+    encode_time_sync_response, encode_world_auth_session_frame, read_logon_challenge_response,
+    read_logon_proof_response, read_plain_world_server_frame, read_realm_list_response,
 };
 use zeroize::Zeroizing;
 
@@ -30,10 +31,19 @@ use crate::{
     boundary::{BoundaryError, WorkerBoundary},
     config::CredentialMaterial,
     machine::EntryMachine,
+    movement::GroundPrediction,
 };
 
 trait LoginTransport: Read + Write + Send {
     fn close(&mut self) -> io::Result<()>;
+
+    fn begin_retained_receive(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn poll_read(&mut self, _destination: &mut [u8]) -> io::Result<Option<usize>> {
+        Ok(None)
+    }
 }
 
 trait TransportFactory: Send {
@@ -172,7 +182,6 @@ fn run_worker_loop_for<F, C, E>(
     E: EntropySource,
 {
     let mut movement_attempt_failed = false;
-    let mut holding_movement_ready = false;
     loop {
         match boundary.receive_control(Duration::from_millis(20)) {
             Ok(command) => {
@@ -180,18 +189,6 @@ fn run_worker_loop_for<F, C, E>(
                 if command == ControlCommand::Disconnect || boundary.is_shutdown() {
                     boundary.disconnect();
                     return;
-                }
-                if holding_movement_ready {
-                    let failure = ClientFailure::new(
-                        FailureCategory::Configuration,
-                        "MovementReady",
-                        "movement publication is deferred in the live Diagnostic World",
-                        RecoveryAction::RestartClient,
-                    );
-                    if !boundary.reject(command.kind(), failure) {
-                        return;
-                    }
-                    continue;
                 }
                 let expected_command = target.expected_command(movement_attempt_failed);
                 if command != expected_command {
@@ -236,8 +233,10 @@ fn run_worker_loop_for<F, C, E>(
                             | EntryAttemptOutcome::MovementReady => true,
                         };
                         if published && target.holds_movement_ready() && movement_ready {
-                            holding_movement_ready = true;
-                            continue;
+                            // A live diagnostic attempt only returns once its retained world
+                            // transport has received an explicit disconnect or has failed.
+                            boundary.disconnect();
+                            return;
                         }
                         if published {
                             boundary.disconnect();
@@ -687,7 +686,7 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })?;
-    reach_movement_ready(
+    let bootstrap = reach_movement_ready(
         boundary,
         machine,
         transport,
@@ -697,6 +696,18 @@ where
         &mut client_stream,
         &selected,
     )?;
+    if target.holds_movement_ready() {
+        run_live_movement_loop(
+            boundary,
+            transport,
+            clock,
+            server_stream.into_incremental(),
+            &mut client_stream,
+            bootstrap.anchor,
+            selected.guid(),
+            bootstrap.run_speed,
+        )?;
+    }
     Ok(EntryAttemptOutcome::MovementReady)
 }
 
@@ -765,6 +776,11 @@ struct BootstrapProgress {
     synchronizing: bool,
 }
 
+struct MovementBootstrap {
+    anchor: WorldPose,
+    run_speed: f32,
+}
+
 impl BootstrapProgress {
     const fn new() -> Self {
         Self {
@@ -803,7 +819,7 @@ fn reach_movement_ready<T, C>(
     server_stream: &mut WorldServerStream,
     client_stream: &mut WorldClientStream,
     selected: &SelectedCharacter,
-) -> Result<(), DiscoveryError>
+) -> Result<MovementBootstrap, DiscoveryError>
 where
     T: LoginTransport,
     C: MonotonicClock,
@@ -985,11 +1001,252 @@ where
             if !boundary.movement_ready(run_speed) {
                 return Err(DiscoveryError::Boundary);
             }
-            return Ok(());
+            return Ok(MovementBootstrap {
+                anchor: world_pose(progress.location.ok_or_else(entry_invariant_failure)?),
+                run_speed,
+            });
         }
     }
 
     Err(world_protocol_drift(progress.stage()))
+}
+
+/// Retain the authenticated world transport after `MovementReady`.  The only
+/// supported outbound states are on-ground forward movement, stop, and the
+/// 10 Hz heartbeat.  Every packet is projected to the boundary only after its
+/// complete encrypted write succeeds.
+#[allow(clippy::too_many_arguments)] // retained loop state is deliberately explicit at this boundary
+fn run_live_movement_loop<T, C>(
+    boundary: &mut WorkerBoundary,
+    transport: &mut T,
+    clock: &mut C,
+    mut server_decoder: IncrementalWorldServerDecoder,
+    client_stream: &mut WorldClientStream,
+    anchor: WorldPose,
+    active_mover: u64,
+    run_speed: f32,
+) -> Result<(), DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    let mut prediction =
+        GroundPrediction::new(anchor, run_speed).ok_or_else(entry_invariant_failure)?;
+    let mut active_intent = crate::MovementIntent::idle();
+    let mut last_tick = clock.now();
+    let tick_interval = Duration::from_nanos(1_000_000_000 / 60);
+    transport.begin_retained_receive().map_err(|error| {
+        world_io_failure(
+            error.kind(),
+            "movement publication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+
+    loop {
+        poll_live_world_frames(
+            transport,
+            clock,
+            &mut server_decoder,
+            client_stream,
+            active_mover,
+        )?;
+        match boundary.receive_control(Duration::from_millis(16)) {
+            Ok(ControlCommand::Disconnect) => {
+                boundary.control_consumed();
+                return Ok(());
+            }
+            Ok(ControlCommand::MovementTransition { engaged }) => {
+                boundary.control_consumed();
+                active_intent = if engaged {
+                    boundary.latest_movement_intent()
+                } else {
+                    crate::MovementIntent::idle()
+                };
+                let opcode = if engaged {
+                    MSG_MOVE_START_FORWARD
+                } else {
+                    MSG_MOVE_STOP
+                };
+                prediction.align_heading(active_intent);
+                write_movement_frame(
+                    transport,
+                    client_stream,
+                    clock,
+                    opcode,
+                    active_mover,
+                    prediction.predicted(),
+                    engaged,
+                )?;
+                if !boundary.movement_submitted(prediction.predicted()) {
+                    return Err(DiscoveryError::Boundary);
+                }
+            }
+            Ok(command) => {
+                boundary.control_consumed();
+                let failure = ClientFailure::new(
+                    FailureCategory::Configuration,
+                    "movement publication",
+                    "command is outside the retained movement capability",
+                    RecoveryAction::RestartClient,
+                );
+                boundary.fail(command.kind(), failure);
+                return Err(DiscoveryError::Boundary);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+
+        if boundary.is_shutdown() {
+            return Ok(());
+        }
+        let now = clock.now();
+        let mut heartbeat_due = false;
+        while now.saturating_sub(last_tick) >= tick_interval {
+            last_tick = last_tick.saturating_add(tick_interval);
+            if active_intent.engaged() {
+                let latest = boundary.latest_movement_intent();
+                if latest.engaged() {
+                    active_intent = latest;
+                }
+            }
+            let tick = prediction.tick(active_intent);
+            boundary.predict_movement(tick.pose);
+            heartbeat_due |= active_intent.engaged() && tick.heartbeat;
+        }
+        if heartbeat_due {
+            write_movement_frame(
+                transport,
+                client_stream,
+                clock,
+                MSG_MOVE_HEARTBEAT,
+                active_mover,
+                prediction.predicted(),
+                true,
+            )?;
+            if !boundary.movement_submitted(prediction.predicted()) {
+                return Err(DiscoveryError::Boundary);
+            }
+        }
+    }
+}
+
+fn poll_live_world_frames<T, C>(
+    transport: &mut T,
+    clock: &mut C,
+    decoder: &mut IncrementalWorldServerDecoder,
+    client_stream: &mut WorldClientStream,
+    active_mover: u64,
+) -> Result<(), DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    let mut received = [0_u8; 8192];
+    loop {
+        match transport.poll_read(&mut received).map_err(|error| {
+            world_io_failure(
+                error.kind(),
+                "movement publication",
+                RecoveryAction::CheckReferenceRealm,
+            )
+        })? {
+            None => break,
+            Some(0) => {
+                return Err(world_io_failure(
+                    io::ErrorKind::UnexpectedEof,
+                    "movement publication",
+                    RecoveryAction::CheckReferenceRealm,
+                ));
+            }
+            Some(count) => decoder.push_bytes(&received[..count]).map_err(|error| {
+                world_protocol_failure(
+                    error,
+                    "movement publication",
+                    RecoveryAction::CheckReferenceRealm,
+                )
+            })?,
+        }
+    }
+    while let Some(frame) = decoder.next_frame().map_err(|error| {
+        world_protocol_failure(
+            error,
+            "movement publication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })? {
+        match frame.opcode() {
+            SMSG_TIME_SYNC_REQ => {
+                let counter = decode_time_sync_request(frame.payload()).map_err(|error| {
+                    world_protocol_failure(
+                        error,
+                        "movement publication",
+                        RecoveryAction::CheckReferenceRealm,
+                    )
+                })?;
+                let payload = encode_time_sync_response(counter, client_time_ms(clock));
+                write_world_frame(
+                    transport,
+                    client_stream,
+                    CMSG_TIME_SYNC_RESP,
+                    &payload,
+                    "movement publication",
+                )?;
+            }
+            opcode => {
+                let controlled = decode_unsupported_self_control_guid(opcode, frame.payload())
+                    .map_err(|error| {
+                        world_protocol_failure(
+                            error,
+                            "movement publication",
+                            RecoveryAction::CheckReferenceRealm,
+                        )
+                    })?;
+                if controlled == Some(active_mover) {
+                    return Err(unsupported_self_control_failure());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_movement_frame<T, C>(
+    transport: &mut T,
+    client_stream: &mut WorldClientStream,
+    clock: &mut C,
+    opcode: u32,
+    active_mover: u64,
+    pose: WorldPose,
+    moving: bool,
+) -> Result<(), DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    let payload = encode_client_movement(
+        active_mover,
+        AcoreMovementInfo::ground(
+            client_time_ms(clock),
+            [pose.east, pose.north, pose.elevation],
+            pose.orientation,
+            moving,
+        ),
+    )
+    .map_err(|error| {
+        world_protocol_failure(
+            error,
+            "movement publication",
+            RecoveryAction::CheckReferenceRealm,
+        )
+    })?;
+    write_world_frame(
+        transport,
+        client_stream,
+        opcode,
+        &payload,
+        "movement publication",
+    )
 }
 
 fn acknowledge_run_speed<T, C>(
@@ -1421,6 +1678,19 @@ impl LoginTransport for TcpLoginTransport {
     fn close(&mut self) -> io::Result<()> {
         self.0.shutdown(Shutdown::Both)
     }
+
+    fn begin_retained_receive(&mut self) -> io::Result<()> {
+        self.0.set_nonblocking(true)
+    }
+
+    fn poll_read(&mut self, destination: &mut [u8]) -> io::Result<Option<usize>> {
+        match self.0.read(destination) {
+            Ok(0) => Ok(Some(0)),
+            Ok(count) => Ok(Some(count)),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 struct SystemClock {
@@ -1472,15 +1742,16 @@ mod tests {
     use client_protocol::{
         CMSG_CHAR_ENUM, CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_MOVE_SET_CAN_FLY_ACK,
         CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher, HeaderDirection,
-        LoginChallengeResponse, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
-        SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY,
-        SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, calculate_srp_client_proof,
-        read_logon_challenge_response,
+        LoginChallengeResponse, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, SMSG_AUTH_RESPONSE,
+        SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_RUN_SPEED_CHANGE,
+        SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
+        WorldClientStream, calculate_srp_client_proof, read_logon_challenge_response,
     };
 
     use super::{
         DiscoveryError, EntropySource, EntryAttemptOutcome, LoginTransport, MonotonicClock,
-        TransportFactory, WorkerTarget, run_entry_attempt, run_worker_loop, run_worker_loop_for,
+        TransportFactory, WorkerTarget, poll_live_world_frames, run_entry_attempt, run_worker_loop,
+        run_worker_loop_for,
     };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
@@ -1729,6 +2000,74 @@ mod tests {
             events.last().map(|event| &event.kind),
             Some(ClientEventKind::Disconnected)
         ));
+    }
+
+    #[test]
+    fn live_diagnostic_publishes_lossless_start_and_stop_only_after_complete_writes() {
+        let config = config();
+        let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
+        let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
+        let client = Arc::new(client);
+        client.send_control(ControlCommand::StartEntry).unwrap();
+        let login_state = ScriptState::default();
+        let world_state = ScriptState::default();
+        let mut factory = CharacterScriptFactory {
+            login_reads: Some(success_script()),
+            world_reads: Some(movement_ready_success_script()),
+            max_read: usize::MAX,
+            world_connect_error: None,
+            login_state,
+            world_state: world_state.clone(),
+        };
+        let worker = thread::spawn(move || {
+            run_worker_loop_for(
+                &config,
+                &credentials,
+                &mut boundary,
+                &mut factory,
+                &mut FixedClock::default(),
+                &mut FixedEntropy::success(PRIVATE_EPHEMERAL),
+                WorkerTarget::LiveDiagnostic,
+            );
+            boundary.mark_stopped();
+        });
+
+        for _ in 0..100 {
+            if client.snapshot().phase == ClientPhase::MovementReady {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        client
+            .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
+        for _ in 0..100 {
+            if client.snapshot().submitted_pose != client.snapshot().entry_anchor {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        client
+            .publish_movement_intent(crate::MovementIntent::idle())
+            .unwrap();
+        thread::sleep(Duration::from_millis(8));
+        client.send_control(ControlCommand::Disconnect).unwrap();
+        worker.join().unwrap();
+
+        let writes = world_state.writes.lock().unwrap();
+        let frames = decode_client_frames(&writes[74..]);
+        assert_eq!(frames[5].0, MSG_MOVE_START_FORWARD);
+        assert_eq!(frames[6].0, MSG_MOVE_STOP);
+        let events = client.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, ClientEventKind::MovementSubmitted { .. }))
+        );
+        assert_eq!(
+            client.snapshot().realm_observed_pose,
+            client.snapshot().entry_anchor
+        );
     }
 
     #[test]
@@ -1981,7 +2320,9 @@ mod tests {
         let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
         client.send_control(ControlCommand::StartEntry).unwrap();
         client.send_control(ControlCommand::RetryEntry).unwrap();
-        client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
+        client
+            .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
         let mut factory = RetryScriptFactory::new([first, second]);
         let entropy_calls = Arc::new(AtomicUsize::new(0));
         let mut entropy = CountingEntropy {
@@ -2076,7 +2417,9 @@ mod tests {
             let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
             let client = Arc::new(client);
             client.send_control(ControlCommand::StartEntry).unwrap();
-            client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
+            client
+                .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+                .unwrap();
             let login_state = ScriptState::default();
             let world_state = ScriptState::default();
             let mut factory = CancellingEntryFactory {
@@ -2634,6 +2977,63 @@ mod tests {
         frames
     }
 
+    #[test]
+    fn retained_receive_answers_fragmented_time_sync_after_movement_ready() {
+        let key = login_session_key();
+        let incoming =
+            retained_server_frame(SMSG_TIME_SYNC_REQ, &0x1234_5678_u32.to_le_bytes(), &key);
+        let state = ScriptState::default();
+        let mut transport = RetainedScriptTransport {
+            polls: VecDeque::from([
+                RetainedPoll::Bytes(incoming[..2].to_vec()),
+                RetainedPoll::Pending,
+                RetainedPoll::Bytes(incoming[2..].to_vec()),
+            ]),
+            state: state.clone(),
+        };
+        let mut clock = FixedClock::sequence([Duration::from_millis(100)]);
+        let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
+        let mut client_stream = WorldClientStream::new(&key);
+
+        assert!(
+            poll_live_world_frames(
+                &mut transport,
+                &mut clock,
+                &mut decoder,
+                &mut client_stream,
+                42,
+            )
+            .is_ok()
+        );
+        // The first poll leaves a partial header buffered and the second is
+        // Pending; no cipher state is committed incorrectly.
+        assert!(state.writes.lock().unwrap().is_empty());
+
+        assert!(
+            poll_live_world_frames(
+                &mut transport,
+                &mut clock,
+                &mut decoder,
+                &mut client_stream,
+                42,
+            )
+            .is_ok()
+        );
+        let writes = state.writes.lock().unwrap().clone();
+        let frames = decode_client_frames(&writes);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0, CMSG_TIME_SYNC_RESP);
+        assert_eq!(frames[0].1[..4], 0x1234_5678_u32.to_le_bytes());
+    }
+
+    fn retained_server_frame(opcode: u16, payload: &[u8], key: &[u8; 40]) -> Vec<u8> {
+        let size = u16::try_from(payload.len() + 2).unwrap();
+        let mut header = [size.to_be_bytes()[0], size.to_be_bytes()[1], 0, 0];
+        header[2..].copy_from_slice(&opcode.to_le_bytes());
+        HeaderCipher::new(HeaderDirection::ServerToClient, key).apply(&mut header);
+        [header.as_slice(), payload].concat()
+    }
+
     fn fixture(name: &str) -> Vec<u8> {
         let value = match name {
             "login-challenge-request.hex" => {
@@ -2820,7 +3220,9 @@ mod tests {
     ) -> MovementScriptedRun {
         let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
         let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
-        client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
+        client
+            .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
         let mut factory = RetryScriptFactory::new([world_reads]);
         match run_entry_attempt(
             config,
@@ -2863,7 +3265,9 @@ mod tests {
         let config = config();
         let credentials = CredentialMaterial::synthetic(b"LEARNER", b"ONLYFORVECTOR");
         let (client, mut boundary) = new_boundary(config.identity().clone()).unwrap();
-        client.publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap());
+        client
+            .publish_movement_intent(crate::MovementIntent::planar(1.0, 0.0).unwrap())
+            .unwrap();
         let login_state = ScriptState::default();
         let world_state = ScriptState::default();
         let mut factory = FaultingEntryFactory {
@@ -3316,6 +3720,51 @@ mod tests {
         fn close(&mut self) -> io::Result<()> {
             self.state.closed.store(true, Ordering::Release);
             Ok(())
+        }
+    }
+
+    enum RetainedPoll {
+        Pending,
+        Bytes(Vec<u8>),
+    }
+
+    struct RetainedScriptTransport {
+        polls: VecDeque<RetainedPoll>,
+        state: ScriptState,
+    }
+
+    impl Read for RetainedScriptTransport {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for RetainedScriptTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.state.writes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for RetainedScriptTransport {
+        fn close(&mut self) -> io::Result<()> {
+            self.state.closed.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn poll_read(&mut self, destination: &mut [u8]) -> io::Result<Option<usize>> {
+            match self.polls.pop_front() {
+                None | Some(RetainedPoll::Pending) => Ok(None),
+                Some(RetainedPoll::Bytes(bytes)) => {
+                    assert!(bytes.len() <= destination.len());
+                    destination[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(Some(bytes.len()))
+                }
+            }
         }
     }
 

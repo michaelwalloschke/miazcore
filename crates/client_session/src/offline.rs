@@ -49,8 +49,11 @@ impl OfflineSession {
         self.client.send_control(command)
     }
 
-    pub fn publish_movement_intent(&self, intent: MovementIntent) {
-        self.client.publish_movement_intent(intent);
+    /// # Errors
+    ///
+    /// Returns an error when the semantic boundary cannot retain an intent edge.
+    pub fn publish_movement_intent(&self, intent: MovementIntent) -> Result<(), BoundaryError> {
+        self.client.publish_movement_intent(intent)
     }
 
     #[must_use]
