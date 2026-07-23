@@ -1,7 +1,7 @@
 # Harden and Accept the World-entry Candidate
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Prove Persisted Movement and Recover Explicitly](18-prove-persisted-movement.md)
 
 ## Parent

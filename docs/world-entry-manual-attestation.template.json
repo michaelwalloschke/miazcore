@@ -1,0 +1,17 @@
+{
+  "schema": "miazcore.world-entry-manual-attestation.v1",
+  "candidate_sha": "REPLACE_WITH_CLEAN_CANDIDATE_SHA",
+  "result": "PASS",
+  "host": "Apple Silicon macOS",
+  "checks": {
+    "metal_and_diagnostic_world_visible": "PASS",
+    "phase_progression_and_pre_ready_input_gating": "PASS",
+    "orbit_zoom_focus_and_camera_relative_wasd": "PASS",
+    "smooth_heading_aligned_movement_without_height_drift": "PASS",
+    "rendered_submitted_realm_observed_diagnostics": "PASS",
+    "movement_proof_freeze_and_reconnect_evidence": "PASS",
+    "correction_and_visible_failure_presentation": "PASS",
+    "clean_disconnect_and_realm_health": "PASS"
+  },
+  "notes": "Describe observed controls and any non-sensitive diagnostic details."
+}
