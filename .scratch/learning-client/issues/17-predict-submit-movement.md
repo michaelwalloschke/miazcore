@@ -55,4 +55,4 @@ Publish camera-relative intent through the latest-value mailbox. Implement deter
 
 ## Comments
 
-- 2026-07-23: Implementation is in progress on `ebc9bba757a19170cbb85ceb28b4ae97c45ffb54`. The retained receive/correction subslice and both compositor proofs pass, but post-review fake-clock/failure coverage and live turning/post-stop socket-health evidence remain open. This ticket is deliberately not resolved.
+- 2026-07-23: Implementation is in progress across `ebc9bba757a19170cbb85ceb28b4ae97c45ffb54` through `1aceab4`. The retained receive/correction subslice and both compositor proofs pass. Deterministic retained-loop evidence now covers a 900-ms heartbeat catch-up coalesced to one latest frame, heading replacement, focus-loss stop intent, EOF-to-recoverable failure, and partial-write transport errors. Ticket exit evidence is still being consolidated, so this ticket is deliberately not resolved.
