@@ -18,14 +18,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$miazcore_output_dir"
-rm -f "$miazcore_image" "$miazcore_sidecar" "$miazcore_log"
+rm -f "$miazcore_image" "$miazcore_sidecar" "$miazcore_log" "${miazcore_image%.*}.ready"
 
 cd "$miazcore_root"
 ./infra/azerothcore/realm reset-state --yes
 ./infra/azerothcore/realm health
-WGPU_BACKEND=metal RUST_LOG=info \
-  cargo run --locked -p learning_client -- --live-proof-output "$miazcore_image" \
-  >"$miazcore_log" 2>&1
+scripts/macos-compositor-proof.sh "$miazcore_image" --live-external-proof-output "$miazcore_log"
 
 rg -q 'AdapterInfo .*backend: Metal' "$miazcore_log"
 rg -q 'rendered proof saved' "$miazcore_log"
@@ -48,6 +46,15 @@ if header[:8] != b"\x89PNG\r\n\x1a\n":
 width, height = struct.unpack(">II", header[16:24])
 if width < 1024 or height < 720:
     raise SystemExit(f"live Diagnostic World gate failed: screenshot is only {width}x{height}")
+bitmap_path = image_path.with_suffix(".bmp")
+import subprocess
+subprocess.run(["sips", "-s", "format", "bmp", str(image_path), "--out", str(bitmap_path)], check=True, stdout=subprocess.DEVNULL)
+bitmap = bitmap_path.read_bytes()
+bitmap_path.unlink()
+offset = int.from_bytes(bitmap[10:14], "little")
+bits_per_pixel = int.from_bytes(bitmap[28:30], "little")
+if bits_per_pixel != 32 or not any(any(pixel[channel] > 8 for channel in range(3)) for pixel in zip(*[iter(bitmap[offset:])]*4)):
+    raise SystemExit("live Diagnostic World gate failed: screenshot is all black")
 
 sidecar = json.loads(sidecar_path.read_text())
 anchor = sidecar.get("entry_anchor")

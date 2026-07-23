@@ -24,7 +24,10 @@ fn run() -> Result<(), StartupError> {
 
     // Configuration and credentials are fully validated before Bevy or a session is constructed.
     let loaded = ClientConfig::reference_realm(&repository_root)?.load()?;
-    let session = if arguments.offline || arguments.proof_output.is_some() {
+    let session = if arguments.offline
+        || arguments.proof_output.is_some()
+        || arguments.external_proof_output.is_some()
+    {
         SessionBridge::new(OfflineSession::start(loaded)?)
     } else {
         SessionBridge::new(LiveDiagnosticSession::start(loaded)?)
@@ -52,6 +55,16 @@ fn run() -> Result<(), StartupError> {
             1.0 / 60.0,
         )))
         .add_plugins(RenderProofPlugin::live_entry(output));
+    } else if let Some(output) = arguments.external_proof_output {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::external(output, false));
+    } else if let Some(output) = arguments.live_external_proof_output {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 60.0,
+        )))
+        .add_plugins(RenderProofPlugin::external(output, true));
     }
 
     app.run();
@@ -62,6 +75,8 @@ fn run() -> Result<(), StartupError> {
 struct Arguments {
     proof_output: Option<PathBuf>,
     live_proof_output: Option<PathBuf>,
+    external_proof_output: Option<PathBuf>,
+    live_external_proof_output: Option<PathBuf>,
     offline: bool,
 }
 
@@ -70,26 +85,33 @@ impl Arguments {
         let mut arguments = arguments.into_iter();
         let mut parsed = Self::default();
         while let Some(argument) = arguments.next() {
-            if argument == "--proof-output" {
-                if parsed.proof_output.is_some() || parsed.live_proof_output.is_some() {
+            if argument == "--proof-output"
+                || argument == "--live-proof-output"
+                || argument == "--external-proof-output"
+                || argument == "--live-external-proof-output"
+            {
+                if parsed.proof_output.is_some()
+                    || parsed.live_proof_output.is_some()
+                    || parsed.external_proof_output.is_some()
+                    || parsed.live_external_proof_output.is_some()
+                {
                     return Err(StartupError::DuplicateProofOutput);
                 }
-                parsed.proof_output = Some(
+                let output = Some(
                     arguments
                         .next()
                         .map(PathBuf::from)
                         .ok_or(StartupError::MissingProofOutput)?,
                 );
-            } else if argument == "--live-proof-output" {
-                if parsed.proof_output.is_some() || parsed.live_proof_output.is_some() {
-                    return Err(StartupError::DuplicateProofOutput);
+                if argument == "--proof-output" {
+                    parsed.proof_output = output;
+                } else if argument == "--live-proof-output" {
+                    parsed.live_proof_output = output;
+                } else if argument == "--external-proof-output" {
+                    parsed.external_proof_output = output;
+                } else {
+                    parsed.live_external_proof_output = output;
                 }
-                parsed.live_proof_output = Some(
-                    arguments
-                        .next()
-                        .map(PathBuf::from)
-                        .ok_or(StartupError::MissingProofOutput)?,
-                );
             } else if argument == "--offline" {
                 if parsed.offline {
                     return Err(StartupError::DuplicateOfflineMode);
@@ -99,7 +121,9 @@ impl Arguments {
                 return Err(StartupError::UnsupportedArgument);
             }
         }
-        if parsed.offline && parsed.live_proof_output.is_some() {
+        if parsed.offline
+            && (parsed.live_proof_output.is_some() || parsed.live_external_proof_output.is_some())
+        {
             return Err(StartupError::OfflineLiveConflict);
         }
         Ok(parsed)
@@ -183,8 +207,18 @@ mod tests {
             .unwrap(),
             Arguments {
                 proof_output: Some("artifacts/offline.png".into()),
-                live_proof_output: None,
-                offline: false,
+                ..Arguments::default()
+            }
+        );
+        assert_eq!(
+            Arguments::parse([
+                OsString::from("--external-proof-output"),
+                OsString::from("artifacts/compositor.png"),
+            ])
+            .unwrap(),
+            Arguments {
+                external_proof_output: Some("artifacts/compositor.png".into()),
+                ..Arguments::default()
             }
         );
         assert_eq!(
@@ -196,7 +230,7 @@ mod tests {
             Arguments {
                 proof_output: None,
                 live_proof_output: Some("artifacts/live.png".into()),
-                offline: false,
+                ..Arguments::default()
             }
         );
         assert!(matches!(

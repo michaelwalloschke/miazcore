@@ -24,6 +24,7 @@ const PRESENTATION_SETTLE_DELAY: Duration = Duration::from_secs(3);
 pub struct RenderProofPlugin {
     output: PathBuf,
     mode: RenderProofMode,
+    backend: CaptureBackend,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,12 +33,19 @@ enum RenderProofMode {
     LiveEntry,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaptureBackend {
+    Bevy,
+    External,
+}
+
 impl RenderProofPlugin {
     #[must_use]
     pub fn new(output: impl Into<PathBuf>) -> Self {
         Self {
             output: output.into(),
             mode: RenderProofMode::Offline,
+            backend: CaptureBackend::Bevy,
         }
     }
 
@@ -48,6 +56,20 @@ impl RenderProofPlugin {
         Self {
             output: output.into(),
             mode: RenderProofMode::LiveEntry,
+            backend: CaptureBackend::Bevy,
+        }
+    }
+
+    #[must_use]
+    pub fn external(output: impl Into<PathBuf>, live_entry: bool) -> Self {
+        Self {
+            output: output.into(),
+            mode: if live_entry {
+                RenderProofMode::LiveEntry
+            } else {
+                RenderProofMode::Offline
+            },
+            backend: CaptureBackend::External,
         }
     }
 }
@@ -56,12 +78,15 @@ impl Plugin for RenderProofPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RenderProofState {
             output: self.output.clone(),
+            ready: self.output.with_extension("ready"),
             frame: 0,
             requested: false,
+            ready_written: false,
             scripted: false,
             ready_frame: None,
             capture_not_before: None,
             mode: self.mode,
+            backend: self.backend,
         })
         .add_systems(Update, script_render_proof.in_set(ClientScheduleSet::Input))
         .add_systems(
@@ -74,12 +99,15 @@ impl Plugin for RenderProofPlugin {
 #[derive(Resource)]
 struct RenderProofState {
     output: PathBuf,
+    ready: PathBuf,
     frame: u32,
     requested: bool,
+    ready_written: bool,
     scripted: bool,
     ready_frame: Option<u32>,
     capture_not_before: Option<Instant>,
     mode: RenderProofMode,
+    backend: CaptureBackend,
 }
 
 fn script_render_proof(
@@ -100,6 +128,9 @@ fn script_render_proof(
     let sidecar = proof.output.with_extension("json");
     if sidecar.exists() {
         fs::remove_file(sidecar).expect("old proof sidecar should be replaceable");
+    }
+    if proof.ready.exists() {
+        fs::remove_file(&proof.ready).expect("old proof ready marker should be replaceable");
     }
     match proof.mode {
         RenderProofMode::Offline => {
@@ -162,10 +193,26 @@ fn capture_render_proof(
         info!("rendered proof saved to {}", proof.output.display());
         exit.write(AppExit::Success);
     } else if !proof.requested && proof.frame >= capture_frame && presentation_settled {
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(proof.output.clone()));
-        proof.requested = true;
+        match proof.backend {
+            CaptureBackend::Bevy => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(proof.output.clone()));
+                proof.requested = true;
+            }
+            CaptureBackend::External if !proof.ready_written => {
+                fs::write(&proof.ready, "miazcore external compositor capture ready\n")
+                    .expect("proof ready marker should be writable");
+                info!(
+                    "external compositor capture ready at {}",
+                    proof.ready.display()
+                );
+                proof.ready_written = true;
+            }
+            CaptureBackend::External => {
+                proof.requested = true;
+            }
+        }
     } else if proof.frame > capture_frame.saturating_add(TIMEOUT_FRAME) {
         panic!("timed out while waiting for the rendered proof artifact");
     }
