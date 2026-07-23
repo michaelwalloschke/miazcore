@@ -7,17 +7,19 @@ use std::{
 };
 
 use client_protocol::{
-    AcoreMovementInfo, CMSG_CHAR_ENUM, CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_MOVE_SET_CAN_FLY_ACK,
-    CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, IncrementalWorldServerDecoder, LoginChallengeResponse,
-    LoginProofResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, ProtocolError,
-    REALM_LIST_REQUEST, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
-    SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY,
-    SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, WorldAuthResponse, WorldClientStream,
-    WorldEntryLocation, WorldServerStream, calculate_srp_client_proof,
-    decode_authoritative_self_update, decode_character_enumeration, decode_force_run_speed_change,
-    decode_login_verify_world, decode_time_sync_request, decode_unset_can_fly,
-    decode_unsupported_self_control_guid, decode_world_auth_challenge, decode_world_auth_response,
-    encode_client_movement, encode_force_run_speed_change_ack, encode_logon_challenge,
+    AcoreMovementInfo, CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK, CMSG_FORCE_RUN_SPEED_CHANGE_ACK,
+    CMSG_LOGOUT_REQUEST, CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP,
+    IncrementalWorldServerDecoder, LoginChallengeResponse, LoginProofResponse, MSG_MOVE_HEARTBEAT,
+    MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, ProtocolError, REALM_LIST_REQUEST, SMSG_AUTH_RESPONSE,
+    SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_MOVE_ROOT,
+    SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_LOGOUT_COMPLETE,
+    SMSG_LOGOUT_RESPONSE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
+    WorldAuthResponse, WorldClientStream, WorldEntryLocation, WorldServerStream,
+    calculate_srp_client_proof, decode_authoritative_self_update, decode_character_enumeration,
+    decode_force_move_root, decode_force_run_speed_change, decode_login_verify_world,
+    decode_time_sync_request, decode_unset_can_fly, decode_unsupported_self_control_guid,
+    decode_world_auth_challenge, decode_world_auth_response, encode_client_movement,
+    encode_force_move_root_ack, encode_force_run_speed_change_ack, encode_logon_challenge,
     encode_logon_proof, encode_move_set_can_fly_ack, encode_player_login,
     encode_time_sync_response, encode_world_auth_session_frame, read_logon_challenge_response,
     read_logon_proof_response, read_plain_world_server_frame, read_realm_list_response,
@@ -26,7 +28,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     ClientConfig, ClientFailure, ClientPhase, ControlCommand, DiscoveredRealm, EntryStage,
-    FailureCategory, LoadedClientConfig, RecoveryAction, SelectedCharacter, WorldPose,
+    FailureCategory, LoadedClientConfig, ProofStage, RecoveryAction, SelectedCharacter, WorldPose,
     api::SelectedCharacterFields,
     boundary::{BoundaryError, WorkerBoundary},
     config::CredentialMaterial,
@@ -117,6 +119,13 @@ enum EntryAttemptOutcome {
     RealmDiscovered,
     CharacterSelected(SelectedCharacter),
     MovementReady,
+    MovementProofRequested { expected: WorldPose },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryMode {
+    Initial,
+    Reconnect,
 }
 
 pub(crate) fn spawn_production_worker(
@@ -167,7 +176,7 @@ fn run_worker_loop<F, C, E>(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_worker_loop_for<F, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
@@ -231,6 +240,65 @@ fn run_worker_loop_for<F, C, E>(
                             }
                             EntryAttemptOutcome::RealmDiscovered
                             | EntryAttemptOutcome::MovementReady => true,
+                            EntryAttemptOutcome::MovementProofRequested { expected } => {
+                                if !boundary.proof_stage(ProofStage::Reconnecting) {
+                                    return;
+                                }
+                                match run_entry_attempt_mode(
+                                    config,
+                                    credentials,
+                                    boundary,
+                                    factory,
+                                    clock,
+                                    entropy,
+                                    WorkerTarget::MovementReady,
+                                    EntryMode::Reconnect,
+                                ) {
+                                    Ok(EntryAttemptOutcome::MovementReady) => {
+                                        if !boundary.proof_stage(ProofStage::Comparing) {
+                                            return;
+                                        }
+                                        let passed = boundary.complete_movement_proof(expected);
+                                        if !passed {
+                                            boundary.fail(
+                                                ControlCommand::BeginMovementProof.kind(),
+                                                ClientFailure::new(
+                                                    FailureCategory::ProtocolIncompatibility,
+                                                    "movement proof comparison",
+                                                    "fresh realm observation did not match the submitted stop pose",
+                                                    RecoveryAction::RetryExplicitly,
+                                                ),
+                                            );
+                                            movement_attempt_failed = true;
+                                            continue;
+                                        }
+                                        return;
+                                    }
+                                    Ok(_) => {
+                                        boundary.fail(
+                                            ControlCommand::BeginMovementProof.kind(),
+                                            ClientFailure::new(
+                                                FailureCategory::InternalBackpressure,
+                                                "movement proof reconnect",
+                                                "reconnect did not reach the required world-ready state",
+                                                RecoveryAction::RetryExplicitly,
+                                            ),
+                                        );
+                                        return;
+                                    }
+                                    Err(DiscoveryError::Failure(failure)) => {
+                                        boundary.fail(
+                                            ControlCommand::BeginMovementProof.kind(),
+                                            failure,
+                                        );
+                                        movement_attempt_failed = true;
+                                        continue;
+                                    }
+                                    Err(DiscoveryError::Cancelled | DiscoveryError::Boundary) => {
+                                        return;
+                                    }
+                                }
+                            }
                         };
                         if published && target.holds_movement_ready() && movement_ready {
                             // A live diagnostic attempt only returns once its retained world
@@ -272,6 +340,34 @@ fn run_entry_attempt<F, C, E>(
     clock: &mut C,
     entropy: &mut E,
     target: WorkerTarget,
+) -> Result<EntryAttemptOutcome, DiscoveryError>
+where
+    F: TransportFactory,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    run_entry_attempt_mode(
+        config,
+        credentials,
+        boundary,
+        factory,
+        clock,
+        entropy,
+        target,
+        EntryMode::Initial,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_entry_attempt_mode<F, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    factory: &mut F,
+    clock: &mut C,
+    entropy: &mut E,
+    target: WorkerTarget,
+    entry_mode: EntryMode,
 ) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     F: TransportFactory,
@@ -350,6 +446,7 @@ where
         deadline,
         &session_key,
         target,
+        entry_mode,
     );
     let _ = world_transport.close();
     if result.is_err() {
@@ -555,6 +652,7 @@ fn select_character<T, C, E>(
     deadline: Duration,
     session_key: &[u8; 40],
     target: WorkerTarget,
+    entry_mode: EntryMode,
 ) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     T: LoginTransport,
@@ -695,9 +793,10 @@ where
         &mut server_stream,
         &mut client_stream,
         &selected,
+        entry_mode,
     )?;
-    if target.holds_movement_ready() {
-        run_live_movement_loop(
+    if target.holds_movement_ready()
+        && let RetainedLoopExit::BeginMovementProof { expected } = run_live_movement_loop(
             boundary,
             transport,
             clock,
@@ -706,7 +805,9 @@ where
             bootstrap.anchor,
             selected.guid(),
             bootstrap.run_speed,
-        )?;
+        )?
+    {
+        return Ok(EntryAttemptOutcome::MovementProofRequested { expected });
     }
     Ok(EntryAttemptOutcome::MovementReady)
 }
@@ -819,6 +920,7 @@ fn reach_movement_ready<T, C>(
     server_stream: &mut WorldServerStream,
     client_stream: &mut WorldClientStream,
     selected: &SelectedCharacter,
+    entry_mode: EntryMode,
 ) -> Result<MovementBootstrap, DiscoveryError>
 where
     T: LoginTransport,
@@ -846,12 +948,18 @@ where
                         RecoveryAction::CheckReferenceRealm,
                     )
                 })?;
-                validate_selected_location(selected, location)?;
+                if entry_mode == EntryMode::Initial {
+                    validate_selected_location(selected, location)?;
+                }
                 if let Some(movement) = progress.movement {
                     validate_self_location(movement, location)?;
                 }
                 let pose = world_pose(location);
-                if !boundary.observe_entry_anchor(pose) {
+                let observed = match entry_mode {
+                    EntryMode::Initial => boundary.observe_entry_anchor(pose),
+                    EntryMode::Reconnect => boundary.observe_reconnect_pose(pose),
+                };
+                if !observed {
                     return Err(DiscoveryError::Boundary);
                 }
                 progress.location = Some(location);
@@ -1015,7 +1123,13 @@ where
 /// supported outbound states are on-ground forward movement, stop, and the
 /// 10 Hz heartbeat.  Every packet is projected to the boundary only after its
 /// complete encrypted write succeeds.
-#[allow(clippy::too_many_arguments)] // retained loop state is deliberately explicit at this boundary
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RetainedLoopExit {
+    Disconnect,
+    BeginMovementProof { expected: WorldPose },
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // retained loop state is deliberately explicit at this boundary
 fn run_live_movement_loop<T, C>(
     boundary: &mut WorkerBoundary,
     transport: &mut T,
@@ -1025,7 +1139,7 @@ fn run_live_movement_loop<T, C>(
     anchor: WorldPose,
     active_mover: u64,
     run_speed: f32,
-) -> Result<(), DiscoveryError>
+) -> Result<RetainedLoopExit, DiscoveryError>
 where
     T: LoginTransport,
     C: MonotonicClock,
@@ -1054,7 +1168,46 @@ where
         match boundary.receive_control(Duration::from_millis(16)) {
             Ok(ControlCommand::Disconnect) => {
                 boundary.control_consumed();
-                return Ok(());
+                return Ok(RetainedLoopExit::Disconnect);
+            }
+            Ok(ControlCommand::BeginMovementProof) => {
+                boundary.control_consumed();
+                let Some(expected) = boundary.begin_movement_proof() else {
+                    let failure = ClientFailure::new(
+                        FailureCategory::Configuration,
+                        "movement proof",
+                        "movement proof requires a submitted stopped pose at least two metres from entry",
+                        RecoveryAction::RetryExplicitly,
+                    );
+                    if !boundary.reject(ControlCommand::BeginMovementProof.kind(), failure) {
+                        return Err(DiscoveryError::Boundary);
+                    }
+                    continue;
+                };
+                write_world_frame(
+                    transport,
+                    client_stream,
+                    CMSG_LOGOUT_REQUEST,
+                    &[],
+                    "movement proof logout",
+                )?;
+                wait_for_logout_complete(
+                    transport,
+                    clock,
+                    &mut server_decoder,
+                    client_stream,
+                    active_mover,
+                    expected,
+                )?;
+                if !boundary.proof_stage(ProofStage::WaitingOffline) {
+                    return Err(DiscoveryError::Boundary);
+                }
+                // `SMSG_LOGOUT_COMPLETE` proves the server accepted the saving
+                // logout. Keep the old session alive for a small bounded
+                // offline-settle interval before its owning stack frame drops
+                // both the socket and the ordered cipher.
+                std::thread::sleep(Duration::from_millis(250));
+                return Ok(RetainedLoopExit::BeginMovementProof { expected });
             }
             Ok(ControlCommand::MovementTransition { engaged }) => {
                 boundary.control_consumed();
@@ -1078,7 +1231,7 @@ where
                     prediction.predicted(),
                     engaged,
                 )?;
-                if !boundary.movement_submitted(prediction.predicted()) {
+                if !boundary.movement_submitted_state(prediction.predicted(), !engaged) {
                     return Err(DiscoveryError::Boundary);
                 }
             }
@@ -1094,11 +1247,11 @@ where
                 return Err(DiscoveryError::Boundary);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(RetainedLoopExit::Disconnect),
         }
 
         if boundary.is_shutdown() {
-            return Ok(());
+            return Ok(RetainedLoopExit::Disconnect);
         }
         let now = clock.now();
         let mut heartbeat_due = false;
@@ -1124,8 +1277,125 @@ where
                 prediction.predicted(),
                 true,
             )?;
-            if !boundary.movement_submitted(prediction.predicted()) {
+            if !boundary.movement_submitted_state(prediction.predicted(), false) {
                 return Err(DiscoveryError::Boundary);
+            }
+        }
+    }
+}
+
+/// Wait only for the realm's protocol-visible saving-logout completion while
+/// still servicing time-sync.  The caller then closes and discards this world
+/// transport before creating a fresh login and world session.
+fn wait_for_logout_complete<T, C>(
+    transport: &mut T,
+    clock: &mut C,
+    decoder: &mut IncrementalWorldServerDecoder,
+    client_stream: &mut WorldClientStream,
+    active_mover: u64,
+    stopped_pose: WorldPose,
+) -> Result<(), DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    // AzerothCore's normal (non-resting) logout deliberately completes after
+    // 20 seconds. Keep a small protocol-bound margin rather than treating the
+    // root acknowledgement as an immediate completion signal.
+    const LOGOUT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(25);
+    let deadline = clock
+        .now()
+        .checked_add(LOGOUT_COMPLETION_TIMEOUT)
+        .ok_or_else(timeout_failure)?;
+    let mut received = [0_u8; 8192];
+    loop {
+        if clock.now() > deadline {
+            return Err(timeout_failure());
+        }
+        match transport.poll_read(&mut received).map_err(|error| {
+            world_io_failure(
+                error.kind(),
+                "movement proof logout",
+                RecoveryAction::RetryExplicitly,
+            )
+        })? {
+            None => {
+                std::thread::sleep(Duration::from_millis(8));
+                continue;
+            }
+            Some(0) => {
+                return Err(world_io_failure(
+                    io::ErrorKind::UnexpectedEof,
+                    "movement proof logout",
+                    RecoveryAction::RetryExplicitly,
+                ));
+            }
+            Some(count) => decoder.push_bytes(&received[..count]).map_err(|error| {
+                world_protocol_failure(
+                    error,
+                    "movement proof logout",
+                    RecoveryAction::RetryExplicitly,
+                )
+            })?,
+        }
+        while let Some(frame) = decoder.next_frame().map_err(|error| {
+            world_protocol_failure(
+                error,
+                "movement proof logout",
+                RecoveryAction::RetryExplicitly,
+            )
+        })? {
+            match frame.opcode() {
+                SMSG_LOGOUT_COMPLETE => return Ok(()),
+                SMSG_LOGOUT_RESPONSE => {}
+                SMSG_FORCE_MOVE_ROOT => {
+                    let request = decode_force_move_root(frame.payload()).map_err(|error| {
+                        world_protocol_failure(
+                            error,
+                            "movement proof logout",
+                            RecoveryAction::RetryExplicitly,
+                        )
+                    })?;
+                    acknowledge_forced_root(
+                        transport,
+                        client_stream,
+                        clock,
+                        request,
+                        active_mover,
+                        stopped_pose,
+                        "movement proof logout",
+                    )?;
+                }
+                SMSG_TIME_SYNC_REQ => {
+                    let counter = decode_time_sync_request(frame.payload()).map_err(|error| {
+                        world_protocol_failure(
+                            error,
+                            "movement proof logout",
+                            RecoveryAction::RetryExplicitly,
+                        )
+                    })?;
+                    write_world_frame(
+                        transport,
+                        client_stream,
+                        CMSG_TIME_SYNC_RESP,
+                        &encode_time_sync_response(counter, client_time_ms(clock)),
+                        "movement proof logout",
+                    )?;
+                }
+                opcode => {
+                    if decode_unsupported_self_control_guid(opcode, frame.payload()).map_err(
+                        |error| {
+                            world_protocol_failure(
+                                error,
+                                "movement proof logout",
+                                RecoveryAction::RetryExplicitly,
+                            )
+                        },
+                    )? == Some(active_mover)
+                    {
+                        return Err(unsupported_self_control_failure());
+                    }
+                }
             }
         }
     }
@@ -1317,6 +1587,39 @@ where
     Ok(())
 }
 
+fn acknowledge_forced_root<T, C>(
+    transport: &mut T,
+    client_stream: &mut WorldClientStream,
+    clock: &mut C,
+    request: client_protocol::ForceMoveRoot,
+    active_mover: u64,
+    pose: WorldPose,
+    stage: &'static str,
+) -> Result<(), DiscoveryError>
+where
+    T: LoginTransport,
+    C: MonotonicClock,
+{
+    if request.guid() != active_mover {
+        return Err(entry_invariant_failure());
+    }
+    let movement = AcoreMovementInfo::ground(
+        client_time_ms(clock),
+        [pose.east, pose.north, pose.elevation],
+        pose.orientation,
+        false,
+    );
+    let payload = encode_force_move_root_ack(request, movement)
+        .map_err(|error| world_protocol_failure(error, stage, RecoveryAction::RetryExplicitly))?;
+    write_world_frame(
+        transport,
+        client_stream,
+        CMSG_FORCE_MOVE_ROOT_ACK,
+        &payload,
+        stage,
+    )
+}
+
 fn write_world_frame<T: LoginTransport>(
     transport: &mut T,
     client_stream: &mut WorldClientStream,
@@ -1338,8 +1641,15 @@ fn validate_selected_location(
     selected: &SelectedCharacter,
     location: WorldEntryLocation,
 ) -> Result<(), DiscoveryError> {
+    // Character enumeration is persisted state. The Realm's LOGIN_VERIFY_WORLD
+    // is authoritative for the entry anchor and may settle a player slightly
+    // onto the server's ground before it is sent. Keep this acceptance narrow:
+    // it applies only during the initial entry corroboration, requires the same
+    // map, and does not relax any later movement-proof comparison.
+    const INITIAL_SPAWN_SETTLEMENT_METRES: f32 = 1.0;
     if selected.map_id() != location.map_id()
-        || squared_distance(selected.position(), location.position()) > 0.25_f32.powi(2)
+        || squared_distance(selected.position(), location.position())
+            > INITIAL_SPAWN_SETTLEMENT_METRES.powi(2)
     {
         return Err(entry_invariant_failure());
     }
@@ -1740,19 +2050,22 @@ mod tests {
         config::CredentialMaterial,
     };
     use client_protocol::{
-        CMSG_CHAR_ENUM, CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_MOVE_SET_CAN_FLY_ACK,
-        CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher, HeaderDirection,
-        LoginChallengeResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP,
-        SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
-        SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_MOVE_UNSET_CAN_FLY,
-        SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT, WorldClientStream, calculate_srp_client_proof,
+        CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK, CMSG_FORCE_RUN_SPEED_CHANGE_ACK,
+        CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher,
+        HeaderDirection, LoginChallengeResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD,
+        MSG_MOVE_STOP, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
+        SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD,
+        SMSG_LOGOUT_COMPLETE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
+        WorldClientStream, calculate_srp_client_proof, decode_login_verify_world,
         read_logon_challenge_response,
     };
 
     use super::{
         DiscoveryError, EntropySource, EntryAttemptOutcome, LoginTransport, MonotonicClock,
-        TransportFactory, WorkerTarget, poll_live_world_frames, run_entry_attempt,
-        run_live_movement_loop, run_worker_loop, run_worker_loop_for, write_movement_frame,
+        SelectedCharacter, SelectedCharacterFields, TransportFactory, WorkerTarget,
+        poll_live_world_frames, run_entry_attempt, run_live_movement_loop, run_worker_loop,
+        run_worker_loop_for, validate_selected_location, wait_for_logout_complete,
+        write_movement_frame,
     };
 
     const PRIVATE_EPHEMERAL: [u8; 32] = [
@@ -1760,6 +2073,37 @@ mod tests {
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
         0x1f, 0x20,
     ];
+
+    #[test]
+    fn initial_entry_accepts_bounded_realm_spawn_settlement_but_not_a_large_delta() {
+        let selected = SelectedCharacter::new(SelectedCharacterFields {
+            guid: 7,
+            name: "Miaztest".to_owned(),
+            race: 1,
+            class: 1,
+            gender: 0,
+            level: 1,
+            area_id: 0,
+            map_id: 0,
+            position: [-8949.95, -132.493, 83.5312],
+        })
+        .unwrap();
+
+        let location = |east: f32| {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&0_u32.to_le_bytes());
+            payload.extend_from_slice(&east.to_le_bytes());
+            payload.extend_from_slice(&(-132.493_f32).to_le_bytes());
+            payload.extend_from_slice(&(83.5312_f32).to_le_bytes());
+            payload.extend_from_slice(&0_f32.to_le_bytes());
+            decode_login_verify_world(&payload).unwrap()
+        };
+
+        // Observed on the reference Realm: Character Enum reports -8949.950,
+        // while LOGIN_VERIFY_WORLD settles the player to -8949.485.
+        assert!(validate_selected_location(&selected, location(-8949.485)).is_ok());
+        assert!(validate_selected_location(&selected, location(-8948.94)).is_err());
+    }
 
     #[test]
     fn scripted_fragmented_success_reaches_the_final_boundary_in_order() {
@@ -3108,6 +3452,55 @@ mod tests {
     }
 
     #[test]
+    fn logout_acknowledges_the_realm_forced_root_before_completion() {
+        let key = login_session_key();
+        let incoming = retained_server_frames(
+            &[
+                (
+                    SMSG_FORCE_MOVE_ROOT,
+                    vec![0x01, 0x01, 0x78, 0x56, 0x34, 0x12],
+                ),
+                (SMSG_LOGOUT_COMPLETE, Vec::new()),
+            ],
+            &key,
+        );
+        let state = ScriptState::default();
+        let mut transport = RetainedScriptTransport {
+            polls: VecDeque::from([RetainedPoll::Bytes(incoming)]),
+            state: state.clone(),
+        };
+        let mut clock = FixedClock::default();
+        let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
+        let mut client_stream = WorldClientStream::new(&key);
+
+        assert!(
+            wait_for_logout_complete(
+                &mut transport,
+                &mut clock,
+                &mut decoder,
+                &mut client_stream,
+                1,
+                WorldPose {
+                    map_id: 0,
+                    east: 1.0,
+                    north: 2.0,
+                    elevation: 3.0,
+                    orientation: 0.5,
+                },
+            )
+            .is_ok()
+        );
+        let frames = decode_client_frames(&state.writes.lock().unwrap());
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0, CMSG_FORCE_MOVE_ROOT_ACK);
+        assert_eq!(&frames[0].1[..6], &[0x01, 0x01, 0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(
+            u32::from_le_bytes(frames[0].1[6..10].try_into().unwrap()),
+            0x0000_0800
+        );
+    }
+
+    #[test]
     fn retained_receive_eof_and_partial_movement_write_report_transport_errors() {
         let key = login_session_key();
         let mut eof_transport = RetainedScriptTransport {
@@ -3193,11 +3586,21 @@ mod tests {
     }
 
     fn retained_server_frame(opcode: u16, payload: &[u8], key: &[u8; 40]) -> Vec<u8> {
-        let size = u16::try_from(payload.len() + 2).unwrap();
-        let mut header = [size.to_be_bytes()[0], size.to_be_bytes()[1], 0, 0];
-        header[2..].copy_from_slice(&opcode.to_le_bytes());
-        HeaderCipher::new(HeaderDirection::ServerToClient, key).apply(&mut header);
-        [header.as_slice(), payload].concat()
+        retained_server_frames(&[(opcode, payload.to_vec())], key)
+    }
+
+    fn retained_server_frames(frames: &[(u16, Vec<u8>)], key: &[u8; 40]) -> Vec<u8> {
+        let mut cipher = HeaderCipher::new(HeaderDirection::ServerToClient, key);
+        let mut encoded = Vec::new();
+        for (opcode, payload) in frames {
+            let size = u16::try_from(payload.len() + 2).unwrap();
+            let mut header = [size.to_be_bytes()[0], size.to_be_bytes()[1], 0, 0];
+            header[2..].copy_from_slice(&opcode.to_le_bytes());
+            cipher.apply(&mut header);
+            encoded.extend_from_slice(&header);
+            encoded.extend_from_slice(payload);
+        }
+        encoded
     }
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -3403,7 +3806,9 @@ mod tests {
                 boundary.disconnect();
             }
             Ok(
-                EntryAttemptOutcome::RealmDiscovered | EntryAttemptOutcome::CharacterSelected(_),
+                EntryAttemptOutcome::RealmDiscovered
+                | EntryAttemptOutcome::CharacterSelected(_)
+                | EntryAttemptOutcome::MovementProofRequested { .. },
             ) => {
                 panic!("scripted movement attempt stopped at the wrong capability boundary");
             }

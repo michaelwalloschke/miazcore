@@ -12,8 +12,8 @@ use std::{
 use crate::{
     CONTROL_CAPACITY, ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot,
     CommandKind, ControlCommand, CorrectionTarget, DiscoveredRealm, EVENT_CAPACITY,
-    FailureCategory, MovementIntent, PoseSource, QueueCounters, Recovery, RecoveryAction,
-    SanitizedIdentity, SelectedCharacter, SemanticDiagnostic, WorldPose,
+    FailureCategory, MovementIntent, MovementProofEvidence, PoseSource, ProofStage, QueueCounters,
+    Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter, SemanticDiagnostic, WorldPose,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,6 +153,7 @@ pub(crate) struct WorkerBoundary {
     shutdown: Arc<AtomicBool>,
     worker_stopped: Arc<AtomicBool>,
     movement: Arc<Mutex<MovementIntent>>,
+    last_submitted_was_stop: bool,
     event_sequence: u64,
 }
 
@@ -180,6 +181,67 @@ impl WorkerBoundary {
 
     pub(crate) fn latest_movement_intent(&self) -> MovementIntent {
         *self.movement.lock().expect("movement mailbox poisoned")
+    }
+
+    pub(crate) fn begin_movement_proof(&mut self) -> Option<WorldPose> {
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
+        let anchor = current.entry_anchor?;
+        let expected = current.submitted_pose?;
+        let displacement = (expected.east - anchor.east).hypot(expected.north - anchor.north);
+        if displacement < 2.0
+            || !self.last_submitted_was_stop
+            || self.latest_movement_intent().engaged()
+        {
+            return None;
+        }
+        current.movement_proof = Some(MovementProofEvidence {
+            expected,
+            observed: None,
+            tolerance_metres: 0.25,
+        });
+        current.phase = ClientPhase::ProvingMovement(ProofStage::SavingLogout);
+        self.counters
+            .snapshot_revision
+            .fetch_add(1, Ordering::AcqRel);
+        drop(current);
+        *self.movement.lock().expect("movement mailbox poisoned") = MovementIntent::idle();
+        self.publish(ClientEventKind::PhaseChanged {
+            phase: ClientPhase::ProvingMovement(ProofStage::SavingLogout),
+        })
+        .then_some(expected)
+    }
+
+    pub(crate) fn proof_stage(&mut self, stage: ProofStage) -> bool {
+        self.transition(ClientPhase::ProvingMovement(stage))
+    }
+
+    pub(crate) fn observe_reconnect_pose(&mut self, pose: WorldPose) -> bool {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.realm_observed_pose = Some(pose);
+            if let Some(proof) = current.movement_proof.as_mut() {
+                proof.observed = Some(pose);
+            }
+            self.counters
+                .snapshot_revision
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        self.publish(ClientEventKind::PoseObserved {
+            source: PoseSource::ReconnectObservation,
+            pose,
+        })
+    }
+
+    /// Finish the sole accepted persistence comparison.  It reads only the
+    /// frozen submitted oracle and the fresh reconnect observation already
+    /// projected into the snapshot; database or log evidence cannot reach it.
+    pub(crate) fn complete_movement_proof(&mut self, expected: WorldPose) -> bool {
+        let proof = self
+            .snapshot
+            .read()
+            .expect("client snapshot poisoned")
+            .movement_proof;
+        proof.is_some_and(|proof| proof.expected == expected && proof.passed())
     }
 
     pub(crate) fn transition(&mut self, phase: ClientPhase) -> bool {
@@ -256,7 +318,8 @@ impl WorkerBoundary {
             .fetch_add(1, Ordering::AcqRel);
     }
 
-    pub(crate) fn movement_submitted(&mut self, pose: WorldPose) -> bool {
+    pub(crate) fn movement_submitted_state(&mut self, pose: WorldPose, stopped: bool) -> bool {
+        self.last_submitted_was_stop = stopped;
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.submitted_pose = Some(pose);
@@ -283,6 +346,7 @@ impl WorkerBoundary {
     }
 
     pub(crate) fn reset_for_retry(&mut self) {
+        self.last_submitted_was_stop = false;
         let mut current = self.snapshot.write().expect("client snapshot poisoned");
         current.phase = ClientPhase::Offline;
         current.discovered_realm = None;
@@ -292,6 +356,7 @@ impl WorkerBoundary {
         current.submitted_pose = None;
         current.realm_observed_pose = None;
         current.correction_target = None;
+        current.movement_proof = None;
         current.run_speed = None;
         current.latest_failure = None;
         self.counters
@@ -415,6 +480,7 @@ pub(crate) fn new_boundary(
             shutdown,
             worker_stopped,
             movement,
+            last_submitted_was_stop: false,
             event_sequence: 2,
         },
     ))
@@ -540,6 +606,62 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event.kind, ClientEventKind::ScriptedCorrection { .. }))
         );
+    }
+
+    #[test]
+    fn persisted_movement_proof_freezes_the_submitted_stop_and_accepts_only_fresh_reconnect_pose() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose {
+            map_id: 0,
+            east: 10.0,
+            north: -4.0,
+            elevation: 83.5,
+            orientation: 0.0,
+        };
+        let submitted = crate::WorldPose {
+            east: 12.25,
+            ..anchor
+        };
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(submitted, true));
+        let oracle = worker
+            .begin_movement_proof()
+            .expect("two metre stopped move is eligible");
+        assert_eq!(oracle, submitted);
+        assert!(matches!(
+            client.snapshot().phase,
+            ClientPhase::ProvingMovement(crate::ProofStage::SavingLogout)
+        ));
+        assert!(worker.observe_reconnect_pose(crate::WorldPose {
+            east: 12.4,
+            ..anchor
+        }));
+        assert!(worker.complete_movement_proof(oracle));
+        let proof = client.snapshot().movement_proof.unwrap();
+        assert_eq!(proof.expected, submitted);
+        assert!(proof.passed());
+
+        assert!(worker.observe_reconnect_pose(crate::WorldPose {
+            map_id: 1,
+            ..submitted
+        }));
+        assert!(!worker.complete_movement_proof(oracle));
+    }
+
+    #[test]
+    fn persisted_movement_proof_rejects_short_or_still_moving_submission() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let anchor = crate::WorldPose::origin(0);
+        assert!(worker.observe_entry_anchor(anchor));
+        assert!(worker.movement_submitted_state(
+            crate::WorldPose {
+                east: 1.99,
+                ..anchor
+            },
+            true
+        ));
+        assert!(worker.begin_movement_proof().is_none());
+        assert!(client.snapshot().movement_proof.is_none());
     }
 
     #[test]

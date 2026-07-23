@@ -32,6 +32,7 @@ enum RenderProofMode {
     Offline,
     LiveEntry,
     LiveMovement,
+    PersistedMovement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +83,15 @@ impl RenderProofPlugin {
             backend: CaptureBackend::External,
         }
     }
+
+    #[must_use]
+    pub fn persisted_movement_external(output: impl Into<PathBuf>) -> Self {
+        Self {
+            output: output.into(),
+            mode: RenderProofMode::PersistedMovement,
+            backend: CaptureBackend::External,
+        }
+    }
 }
 
 impl Plugin for RenderProofPlugin {
@@ -98,6 +108,7 @@ impl Plugin for RenderProofPlugin {
             movement_started_at: None,
             movement_turned: false,
             movement_stopped: false,
+            verification_requested: false,
             mode: self.mode,
             backend: self.backend,
         })
@@ -123,6 +134,7 @@ struct RenderProofState {
     movement_started_at: Option<Instant>,
     movement_turned: bool,
     movement_stopped: bool,
+    verification_requested: bool,
     mode: RenderProofMode,
     backend: CaptureBackend,
 }
@@ -154,7 +166,9 @@ fn script_render_proof(
             presentation.set_proof_pose();
             camera.set_proof_view();
         }
-        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement => {
+        RenderProofMode::LiveEntry
+        | RenderProofMode::LiveMovement
+        | RenderProofMode::PersistedMovement => {
             assert!(
                 session.is_live_entry(),
                 "live proof requires a live entry session"
@@ -182,13 +196,18 @@ fn capture_render_proof(
     proof.frame += 1;
     if matches!(
         proof.mode,
-        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement
+        RenderProofMode::LiveEntry
+            | RenderProofMode::LiveMovement
+            | RenderProofMode::PersistedMovement
     ) && proof.ready_frame.is_none()
     {
         match view.snapshot().phase {
             client_session::ClientPhase::MovementReady => {
                 proof.ready_frame = Some(proof.frame);
-                if proof.mode == RenderProofMode::LiveMovement {
+                if matches!(
+                    proof.mode,
+                    RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement
+                ) {
                     session
                         .publish_movement_intent(
                             client_session::MovementIntent::planar(1.0, 0.0)
@@ -201,7 +220,10 @@ fn capture_render_proof(
                 }
             }
             client_session::ClientPhase::Failed(_) => {
-                panic!("live proof session failed before MovementReady")
+                panic!(
+                    "live proof session failed before MovementReady: {:?}",
+                    view.snapshot().latest_failure
+                )
             }
             _ if proof.frame > TIMEOUT_FRAME => {
                 panic!("timed out while waiting for MovementReady")
@@ -209,8 +231,14 @@ fn capture_render_proof(
             _ => return,
         }
     }
-    if proof.mode == RenderProofMode::LiveMovement && !proof.movement_stopped {
-        if !proof.movement_turned
+    if matches!(
+        proof.mode,
+        RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement
+    ) && !proof.movement_stopped
+        && !proof.verification_requested
+    {
+        if proof.mode == RenderProofMode::LiveMovement
+            && !proof.movement_turned
             && proof
                 .movement_started_at
                 .is_some_and(|started| started.elapsed() >= Duration::from_secs(1))
@@ -223,10 +251,14 @@ fn capture_render_proof(
                 .expect("live movement proof should accept turn intent");
             proof.movement_turned = true;
         }
-        if proof
-            .movement_started_at
-            .is_some_and(|started| started.elapsed() >= PRESENTATION_SETTLE_DELAY)
-        {
+        if proof.movement_started_at.is_some_and(|started| {
+            started.elapsed()
+                >= if proof.mode == RenderProofMode::PersistedMovement {
+                    Duration::from_millis(450)
+                } else {
+                    PRESENTATION_SETTLE_DELAY
+                }
+        }) {
             session
                 .publish_movement_intent(client_session::MovementIntent::idle())
                 .expect("live movement proof should accept stop intent");
@@ -236,9 +268,37 @@ fn capture_render_proof(
             return;
         }
     }
+    if proof.mode == RenderProofMode::PersistedMovement {
+        match view.snapshot().phase {
+            client_session::ClientPhase::MovementReady if proof.movement_stopped => {
+                session
+                    .verify_persisted_movement()
+                    .expect("persisted proof should accept the semantic verification operation");
+                proof.verification_requested = true;
+                return;
+            }
+            client_session::ClientPhase::ProvingMovement(client_session::ProofStage::Comparing)
+                if view
+                    .snapshot()
+                    .movement_proof
+                    .is_some_and(client_session::MovementProofEvidence::passed) => {}
+            client_session::ClientPhase::Failed(_) => {
+                panic!(
+                    "persisted movement proof failed before fresh reconnect comparison: {:?}",
+                    view.snapshot().latest_failure
+                )
+            }
+            _ if proof.frame > TIMEOUT_FRAME => {
+                panic!("timed out while waiting for persisted movement proof")
+            }
+            _ => return,
+        }
+    }
     let capture_frame = match proof.mode {
         RenderProofMode::Offline => CAPTURE_FRAME,
-        RenderProofMode::LiveEntry | RenderProofMode::LiveMovement => proof
+        RenderProofMode::LiveEntry
+        | RenderProofMode::LiveMovement
+        | RenderProofMode::PersistedMovement => proof
             .ready_frame
             .expect("live proof is armed only after MovementReady")
             .saturating_add(CAPTURE_FRAME),
@@ -247,10 +307,22 @@ fn capture_render_proof(
         .capture_not_before
         .is_some_and(|not_before| Instant::now() >= not_before);
     if proof.requested && proof.output.exists() {
+        let persisted_comparison_complete = proof.mode == RenderProofMode::PersistedMovement
+            && matches!(
+                view.snapshot().phase,
+                client_session::ClientPhase::ProvingMovement(client_session::ProofStage::Comparing)
+            )
+            && view
+                .snapshot()
+                .movement_proof
+                .is_some_and(client_session::MovementProofEvidence::passed);
         if matches!(
             proof.mode,
-            RenderProofMode::LiveEntry | RenderProofMode::LiveMovement
+            RenderProofMode::LiveEntry
+                | RenderProofMode::LiveMovement
+                | RenderProofMode::PersistedMovement
         ) && view.snapshot().phase != client_session::ClientPhase::MovementReady
+            && !persisted_comparison_complete
         {
             panic!("retained world session failed before proof sidecar could be written");
         }
@@ -291,7 +363,7 @@ fn proof_sidecar(
     mode: RenderProofMode,
 ) -> String {
     if view.is_live_entry() {
-        return live_proof_sidecar(view, presentation, mode == RenderProofMode::LiveMovement);
+        return live_proof_sidecar(view, presentation, mode);
     }
     let snapshot = view.snapshot();
     let character = json_string(snapshot.identity.character_name());
@@ -320,7 +392,7 @@ fn proof_sidecar(
 fn live_proof_sidecar(
     view: &DiagnosticView,
     presentation: &DiagnosticPresentation,
-    movement_publication: bool,
+    mode: RenderProofMode,
 ) -> String {
     let snapshot = view.snapshot();
     let anchor = snapshot
@@ -340,7 +412,7 @@ fn live_proof_sidecar(
         concat!(
             "{{\n",
             "  \"schema\": \"miazcore.live-render-proof.v1\",\n",
-            "  \"phase\": \"MovementReady\",\n",
+            "  \"phase\": {},\n",
             "  \"network\": \"reference-realm\",\n",
             "  \"realm_id\": {},\n",
             "  \"client_build\": {},\n",
@@ -351,16 +423,22 @@ fn live_proof_sidecar(
             "  \"predicted_pose\": {},\n",
             "  \"rendered_pose\": {},\n",
             "  \"submitted_pose\": {},\n",
-            "  \"realm_observed_pose\": {}\n",
+            "  \"realm_observed_pose\": {},\n",
+            "  \"movement_proof\": {}\n",
             "}}\n"
         ),
+        json_string(if mode == RenderProofMode::PersistedMovement {
+            "PersistedMovementCompared"
+        } else {
+            "MovementReady"
+        }),
         snapshot.identity.realm_id(),
         snapshot.identity.client_build(),
         json_string(snapshot.identity.character_name()),
         snapshot
             .run_speed
             .expect("MovementReady has a positive run speed"),
-        if movement_publication {
+        if matches!(mode, RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement) {
             "bounded-ground"
         } else {
             "disabled"
@@ -370,6 +448,17 @@ fn live_proof_sidecar(
         pose_json(rendered),
         pose_json(submitted),
         pose_json(observed),
+        snapshot.movement_proof.map_or_else(
+            || "null".to_owned(),
+            |proof| format!(
+                "{{ \"source\": \"fresh-reconnect-login-verify-world\", \"expected\": {}, \"observed\": {}, \"delta_metres\": {}, \"tolerance_metres\": {:.3}, \"passed\": {} }}",
+                pose_json(proof.expected),
+                proof.observed.map_or_else(|| "null".to_owned(), pose_json),
+                proof.delta_metres().map_or_else(|| "null".to_owned(), |delta| format!("{delta:.3}")),
+                proof.tolerance_metres,
+                proof.passed(),
+            ),
+        ),
     )
 }
 

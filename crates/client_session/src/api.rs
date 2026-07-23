@@ -492,6 +492,37 @@ pub enum PoseSource {
     Correction,
 }
 
+/// Sanitized, protocol-visible evidence for the deliberately narrow persisted
+/// movement proof.  The expected pose is frozen at the submitted stop; only a
+/// fresh `SMSG_LOGIN_VERIFY_WORLD` can populate `observed`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovementProofEvidence {
+    pub expected: WorldPose,
+    pub observed: Option<WorldPose>,
+    pub tolerance_metres: f32,
+}
+
+impl MovementProofEvidence {
+    #[must_use]
+    pub fn delta_metres(self) -> Option<f32> {
+        let observed = self.observed?;
+        if observed.map_id != self.expected.map_id {
+            return None;
+        }
+        Some(
+            (observed.east - self.expected.east)
+                .hypot(observed.north - self.expected.north)
+                .hypot(observed.elevation - self.expected.elevation),
+        )
+    }
+
+    #[must_use]
+    pub fn passed(self) -> bool {
+        self.delta_metres()
+            .is_some_and(|delta| delta <= self.tolerance_metres)
+    }
+}
+
 /// A deliberately internal-to-the-learning-client correction input.
 ///
 /// This represents scripted test evidence only.  It is not a claim that the
@@ -601,6 +632,7 @@ pub struct ClientSnapshot {
     pub submitted_pose: Option<WorldPose>,
     pub realm_observed_pose: Option<WorldPose>,
     pub correction_target: Option<CorrectionTarget>,
+    pub movement_proof: Option<MovementProofEvidence>,
     pub run_speed: Option<f32>,
     pub queue_counters: QueueCounters,
     pub latest_failure: Option<ClientFailure>,
@@ -620,6 +652,7 @@ impl ClientSnapshot {
             submitted_pose: None,
             realm_observed_pose: None,
             correction_target: None,
+            movement_proof: None,
             run_speed: None,
             queue_counters: QueueCounters::default(),
             latest_failure: None,

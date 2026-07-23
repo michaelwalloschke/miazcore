@@ -15,9 +15,9 @@ mod runtime;
 pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
     ControlCommand, CorrectionTarget, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,
-    MovementIntent, MovementIntentError, PoseSource, ProofStage, QueueCounters, Recovery,
-    RecoveryAction, SanitizedIdentity, SanitizedText, SelectedCharacter, SemanticDiagnostic,
-    WorldPose,
+    MovementIntent, MovementIntentError, MovementProofEvidence, PoseSource, ProofStage,
+    QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SanitizedText, SelectedCharacter,
+    SemanticDiagnostic, WorldPose,
 };
 pub use boundary::BoundaryError;
 pub use character::{CharacterSelectionEvidence, CharacterSelectionSession};

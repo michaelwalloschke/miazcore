@@ -3,6 +3,12 @@ use flate2::{Decompress, FlushDecompress, Status};
 use crate::ProtocolError;
 
 pub const CMSG_PLAYER_LOGIN: u32 = 0x003d;
+/// Request a saving logout from the Reference Realm.  A successful movement
+/// proof still requires a later fresh-world observation; this opcode is only
+/// the lifecycle boundary that asks the realm to persist the current player.
+pub const CMSG_LOGOUT_REQUEST: u32 = 0x004b;
+pub const SMSG_LOGOUT_RESPONSE: u16 = 0x004c;
+pub const SMSG_LOGOUT_COMPLETE: u16 = 0x004d;
 /// Build-12340 movement opcodes are message opcodes: client and server share
 /// the same numeric value, while the direction is determined by the frame
 /// header.
@@ -12,6 +18,8 @@ pub const MSG_MOVE_HEARTBEAT: u32 = 0x00ee;
 pub const SMSG_UPDATE_OBJECT: u16 = 0x00a9;
 pub const SMSG_FORCE_RUN_SPEED_CHANGE: u16 = 0x00e2;
 pub const CMSG_FORCE_RUN_SPEED_CHANGE_ACK: u32 = 0x00e3;
+pub const SMSG_FORCE_MOVE_ROOT: u16 = 0x00e8;
+pub const CMSG_FORCE_MOVE_ROOT_ACK: u32 = 0x00e9;
 pub const SMSG_COMPRESSED_UPDATE_OBJECT: u16 = 0x01f6;
 pub const SMSG_LOGIN_VERIFY_WORLD: u16 = 0x0236;
 pub const SMSG_MOVE_UNSET_CAN_FLY: u16 = 0x0344;
@@ -48,6 +56,7 @@ const REQUIRED_SELF_UPDATE_FLAGS: u16 =
     UPDATE_FLAG_SELF | UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION;
 
 const MOVEMENT_FLAG_ON_TRANSPORT: u32 = 0x0000_0200;
+const MOVEMENT_FLAG_ROOT: u32 = 0x0000_0800;
 const MOVEMENT_FLAG_FORWARD: u32 = 0x0000_0001;
 const MOVEMENT_FLAG_FALLING: u32 = 0x0000_1000;
 const MOVEMENT_FLAG_SWIMMING: u32 = 0x0020_0000;
@@ -193,6 +202,14 @@ impl AcoreMovementInfo {
     #[must_use]
     pub const fn with_timestamp(mut self, timestamp: u32) -> Self {
         self.timestamp = timestamp;
+        self
+    }
+
+    /// Mark this otherwise on-ground state as rooted for a matching forced-root
+    /// acknowledgement. This is deliberately not a general movement mode.
+    #[must_use]
+    pub const fn rooted(mut self) -> Self {
+        self.flags |= MOVEMENT_FLAG_ROOT;
         self
     }
 
@@ -441,6 +458,25 @@ impl UnsetCanFly {
     }
 }
 
+/// Server request that the active mover acknowledge a forced root state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ForceMoveRoot {
+    guid: u64,
+    counter: u32,
+}
+
+impl ForceMoveRoot {
+    #[must_use]
+    pub const fn guid(self) -> u64 {
+        self.guid
+    }
+
+    #[must_use]
+    pub const fn counter(self) -> u32 {
+        self.counter
+    }
+}
+
 /// Decode the exact 20-byte world-entry location.
 ///
 /// # Errors
@@ -556,6 +592,37 @@ pub fn encode_move_set_can_fly_ack(
     payload.extend_from_slice(&request.counter.to_le_bytes());
     payload.extend_from_slice(&movement.encode()?);
     payload.extend_from_slice(&0_u32.to_le_bytes());
+    Ok(payload)
+}
+
+/// Decode the active mover's forced-root request.
+///
+/// # Errors
+///
+/// Returns a protocol error when the packet is truncated or has trailing bytes.
+pub fn decode_force_move_root(payload: &[u8]) -> Result<ForceMoveRoot, ProtocolError> {
+    let mut cursor = Cursor::new(payload, SMSG_FORCE_MOVE_ROOT);
+    let request = ForceMoveRoot {
+        guid: cursor.packed_guid()?,
+        counter: cursor.u32()?,
+    };
+    cursor.finish()?;
+    Ok(request)
+}
+
+/// Encode the matching forced-root acknowledgement with rooted movement state.
+///
+/// # Errors
+///
+/// Returns a protocol error if the movement state contains a non-finite value.
+pub fn encode_force_move_root_ack(
+    request: ForceMoveRoot,
+    movement: AcoreMovementInfo,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = Vec::with_capacity(64);
+    push_packed_guid(&mut payload, request.guid);
+    payload.extend_from_slice(&request.counter.to_le_bytes());
+    payload.extend_from_slice(&movement.rooted().encode()?);
     Ok(payload)
 }
 
@@ -947,8 +1014,9 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcoreJumpInfo, AcoreMovementInfo, Cursor, MOVEMENT_FLAG_FALLING, SMSG_UPDATE_OBJECT,
-        encode_client_movement,
+        AcoreJumpInfo, AcoreMovementInfo, Cursor, ForceMoveRoot, MOVEMENT_FLAG_FALLING,
+        MOVEMENT_FLAG_ROOT, SMSG_UPDATE_OBJECT, decode_force_move_root, encode_client_movement,
+        encode_force_move_root_ack,
     };
 
     #[test]
@@ -989,5 +1057,33 @@ mod tests {
         .unwrap();
         assert_eq!(&body[..3], &[0x81, 0x07, 0x01]);
         assert_eq!(u32::from_le_bytes(body[3..7].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn forced_root_round_trip_preserves_counter_and_marks_ack_movement_rooted() {
+        let request = decode_force_move_root(&[0x01, 0x01, 0x78, 0x56, 0x34, 0x12]).unwrap();
+        assert_eq!(
+            request,
+            ForceMoveRoot {
+                guid: 1,
+                counter: 0x1234_5678,
+            }
+        );
+
+        let ack = encode_force_move_root_ack(
+            request,
+            AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, false),
+        )
+        .unwrap();
+        assert_eq!(&ack[..6], &[0x01, 0x01, 0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(
+            u32::from_le_bytes(ack[6..10].try_into().unwrap()),
+            MOVEMENT_FLAG_ROOT
+        );
+        assert_eq!(u32::from_le_bytes(ack[12..16].try_into().unwrap()), 42);
+        assert_eq!(&ack[16..20], &1.0_f32.to_le_bytes());
+        assert_eq!(&ack[20..24], &2.0_f32.to_le_bytes());
+        assert_eq!(&ack[24..28], &3.0_f32.to_le_bytes());
+        assert_eq!(&ack[28..32], &0.5_f32.to_le_bytes());
     }
 }

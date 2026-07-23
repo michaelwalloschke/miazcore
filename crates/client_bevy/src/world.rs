@@ -74,11 +74,18 @@ impl DiagnosticPresentation {
             self.heading = anchor.orientation;
         }
         let predicted = snapshot.predicted_pose.unwrap_or(anchor);
-        let target = snapshot
-            .correction_target
-            .map_or(predicted, client_session::CorrectionTarget::pose);
+        let reconnect_observation = snapshot.movement_proof.and_then(|proof| proof.observed);
+        let target = reconnect_observation
+            .or_else(|| {
+                snapshot
+                    .correction_target
+                    .map(client_session::CorrectionTarget::pose)
+            })
+            .unwrap_or(predicted);
         let current = self.rendered_pose.unwrap_or(anchor);
-        if snapshot.correction_target.is_some() && target.map_id != predicted.map_id {
+        if (snapshot.correction_target.is_some() || reconnect_observation.is_some())
+            && target.map_id != predicted.map_id
+        {
             self.rendered_pose = Some(target);
             self.rendered_planar = Vec2::ZERO;
             self.heading = target.orientation;

@@ -272,7 +272,7 @@ fn update_diagnostics(
             }
             DiagnosticText::Connect => {
                 let display_phase = display_phase(&snapshot.phase);
-                text.0 = format_connect_action(display_phase, view.is_live_entry());
+                text.0 = format_connect_action(display_phase, view.is_live_entry(), snapshot);
                 color.0 = if view.is_live_entry()
                     && matches!(display_phase, DisplayPhase::Offline | DisplayPhase::Failed)
                 {
@@ -298,9 +298,10 @@ fn dispatch_connect_entry(
         let result = match display_phase(&view.snapshot().phase) {
             DisplayPhase::Offline => session.start_entry(),
             DisplayPhase::Failed => session.retry_entry(),
-            DisplayPhase::Entering(_) | DisplayPhase::MovementReady | DisplayPhase::Proving => {
+            DisplayPhase::Entering(_) | DisplayPhase::Proving => {
                 continue;
             }
+            DisplayPhase::MovementReady => session.verify_persisted_movement(),
         };
         feedback.0 = result
             .err()
@@ -369,13 +370,34 @@ fn format_session_ladder(phase: DisplayPhase, live_entry: bool) -> String {
     output
 }
 
-fn format_connect_action(phase: DisplayPhase, live_entry: bool) -> String {
+fn format_connect_action(
+    phase: DisplayPhase,
+    live_entry: bool,
+    snapshot: &client_session::ClientSnapshot,
+) -> String {
     if !live_entry {
         return "OFFLINE MODE\nNo realm connection".to_owned();
     }
     match phase {
         DisplayPhase::Offline => "CONNECT & ENTER\nREFERENCE REALM".to_owned(),
-        DisplayPhase::MovementReady => "MOVEMENT READY\nWASD BOUNDED MOVEMENT".to_owned(),
+        DisplayPhase::MovementReady => {
+            let eligible = snapshot.movement_proof.is_none()
+                && snapshot
+                    .entry_anchor
+                    .zip(snapshot.submitted_pose)
+                    .is_some_and(|(anchor, submitted)| {
+                        !snapshot
+                            .predicted_pose
+                            .is_some_and(|predicted| predicted != submitted)
+                            && (submitted.east - anchor.east).hypot(submitted.north - anchor.north)
+                                >= 2.0
+                    });
+            if eligible {
+                "VERIFY PERSISTED\nMOVEMENT".to_owned()
+            } else {
+                "MOVE, STOP AT 2m\nTHEN VERIFY".to_owned()
+            }
+        }
         DisplayPhase::Failed => "RETRY ENTRY\nREFERENCE REALM".to_owned(),
         DisplayPhase::Entering(_) | DisplayPhase::Proving => {
             "ENTERING REFERENCE REALM\nPlease wait".to_owned()
@@ -400,7 +422,7 @@ fn format_acceptance(
     }
     match display_phase(&snapshot.phase) {
         DisplayPhase::MovementReady => (
-            "PASS  MOVEMENT-READY ENTRY\n\nWASD  bounded ground movement\nRMB   orbit camera\nWHEEL / Q E   zoom\nARROWS   orbit fallback\n\nSubmitted pose is client-written only. Realm acceptance and persistence remain unproven.".to_owned(),
+            "MOVEMENT READY\n\nWASD  bounded ground movement\nSTOP at least 2m from Entry Anchor\nthen VERIFY PERSISTED MOVEMENT\n\nSubmitted pose is client-written only until a fresh reconnect comparison passes.".to_owned(),
             true,
         ),
         DisplayPhase::Failed => (
@@ -421,7 +443,23 @@ fn format_acceptance(
             },
             false,
         ),
-        DisplayPhase::Offline | DisplayPhase::Entering(_) | DisplayPhase::Proving => (
+        DisplayPhase::Proving => {
+            let proof = snapshot.movement_proof;
+            let detail = proof.map_or_else(
+                || "No proof oracle available".to_owned(),
+                |proof| format!(
+                    "EXPECTED map {}  {:.2}  {:.2}\nOBSERVED {}\nDELTA {} / tolerance {:.2}m\nSOURCE fresh reconnect LOGIN_VERIFY_WORLD",
+                    proof.expected.map_id,
+                    proof.expected.east,
+                    proof.expected.north,
+                    proof.observed.map_or_else(|| "waiting".to_owned(), |pose| format!("map {}  {:.2}  {:.2}", pose.map_id, pose.east, pose.north)),
+                    proof.delta_metres().map_or_else(|| "map mismatch".to_owned(), |delta| format!("{delta:.3}m")),
+                    proof.tolerance_metres,
+                ),
+            );
+            (format!("PERSISTED MOVEMENT PROOF\n\n{detail}\n\nInput is frozen; old transport and cipher are discarded before reconnect."), false)
+        }
+        DisplayPhase::Offline | DisplayPhase::Entering(_) => (
             "WAITING FOR ENTRY\n\nConnect & Enter starts one complete configured operation.\n\nInput stays gated until the realm reaches MovementReady.".to_owned(),
             false,
         ),

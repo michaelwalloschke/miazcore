@@ -17,7 +17,9 @@ client_pid=$!
 cleanup() { kill "$client_pid" 2>/dev/null || true; wait "$client_pid" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-for _ in {1..120}; do
+# A normal AzerothCore saving logout completes after 20 seconds. Keep the
+# compositor deadline above that lifecycle plus reconnect and render settlement.
+for _ in {1..240}; do
   [[ -f "$ready" ]] && break
   kill -0 "$client_pid" 2>/dev/null || { cat "$log" >&2; exit 1; }
   sleep 0.25

@@ -132,6 +132,18 @@ impl SessionBridge {
         self.session.send_control(ControlCommand::RetryEntry)
     }
 
+    /// Freeze bounded movement and begin the one accepted saving-reconnect
+    /// persistence proof.  Eligibility remains session-owned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session worker can no longer accept a
+    /// semantic control command.
+    pub fn verify_persisted_movement(&self) -> Result<(), BoundaryError> {
+        self.session
+            .send_control(ControlCommand::BeginMovementProof)
+    }
+
     /// Publish replaceable camera-relative movement intent through the session
     /// boundary.  Protocol serialization remains worker-owned.
     ///

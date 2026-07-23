@@ -1,7 +1,7 @@
 # Prove Persisted Movement and Recover Explicitly
 
 Type: implementation
-Status: ready-for-agent
+Status: claimed
 Blocked by: [Predict and Submit Bounded Ground Movement](17-predict-submit-movement.md)
 
 ## Parent
