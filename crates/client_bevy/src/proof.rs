@@ -1,4 +1,9 @@
-use std::{fmt::Write as _, fs, path::PathBuf};
+use std::{
+    fmt::Write as _,
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use bevy::{
     app::AppExit,
@@ -14,6 +19,7 @@ use crate::{
 // Leave enough presented frames for Metal pipeline creation on a cold shader cache.
 const CAPTURE_FRAME: u32 = 180;
 const TIMEOUT_FRAME: u32 = 900;
+const PRESENTATION_SETTLE_DELAY: Duration = Duration::from_secs(3);
 
 pub struct RenderProofPlugin {
     output: PathBuf,
@@ -54,6 +60,7 @@ impl Plugin for RenderProofPlugin {
             requested: false,
             scripted: false,
             ready_frame: None,
+            capture_not_before: None,
             mode: self.mode,
         })
         .add_systems(Update, script_render_proof.in_set(ClientScheduleSet::Input))
@@ -71,6 +78,7 @@ struct RenderProofState {
     requested: bool,
     scripted: bool,
     ready_frame: Option<u32>,
+    capture_not_before: Option<Instant>,
     mode: RenderProofMode,
 }
 
@@ -108,6 +116,9 @@ fn script_render_proof(
                 .expect("live proof session should accept the complete entry operation");
         }
     }
+    if proof.mode == RenderProofMode::Offline {
+        proof.capture_not_before = Some(Instant::now() + PRESENTATION_SETTLE_DELAY);
+    }
     proof.scripted = true;
 }
 
@@ -123,6 +134,7 @@ fn capture_render_proof(
         match view.snapshot().phase {
             client_session::ClientPhase::MovementReady => {
                 proof.ready_frame = Some(proof.frame);
+                proof.capture_not_before = Some(Instant::now() + PRESENTATION_SETTLE_DELAY);
             }
             client_session::ClientPhase::Failed(_) => {
                 panic!("live proof session failed before MovementReady")
@@ -140,13 +152,16 @@ fn capture_render_proof(
             .expect("live proof is armed only after MovementReady")
             .saturating_add(CAPTURE_FRAME),
     };
+    let presentation_settled = proof
+        .capture_not_before
+        .is_some_and(|not_before| Instant::now() >= not_before);
     if proof.requested && proof.output.exists() {
         let sidecar = proof_sidecar(&view, &presentation);
         fs::write(proof.output.with_extension("json"), sidecar)
             .expect("proof sidecar should be writable");
         info!("rendered proof saved to {}", proof.output.display());
         exit.write(AppExit::Success);
-    } else if proof.frame == capture_frame {
+    } else if !proof.requested && proof.frame >= capture_frame && presentation_settled {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(proof.output.clone()));
