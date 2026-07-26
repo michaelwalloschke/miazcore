@@ -6,11 +6,13 @@ output="$1"
 proof_flag="$2"
 log="$3"
 ready="${output%.*}.ready"
+captured="${output%.*}.captured"
 
 command -v swift >/dev/null || { echo "macOS compositor proof requires Swift/CoreGraphics" >&2; exit 64; }
 command -v screencapture >/dev/null || { echo "macOS compositor proof requires screencapture" >&2; exit 64; }
 
-rm -f "$output" "$ready"
+capture_candidate="${output%.*}.capture.png"
+rm -f "$output" "$ready" "$captured" "$capture_candidate"
 cargo build --locked -p learning_client >"$log" 2>&1
 WGPU_BACKEND=metal RUST_LOG=info target/debug/learning_client "$proof_flag" "$output" >>"$log" 2>&1 &
 client_pid=$!
@@ -26,16 +28,37 @@ for _ in {1..240}; do
 done
 [[ -f "$ready" ]] || { echo "timed out waiting for external compositor proof readiness" >&2; exit 1; }
 
-window_id="$(swift "$root/scripts/macos-window-id.swift" "$client_pid" 'Miazcore — Diagnostic World')" || exit $?
-# The app deliberately stays open until this exact path appears.  Let the
-# compositor present stable Metal contents before the one final capture: after
-# a previous Metal gate, CoreGraphics can otherwise expose only window chrome.
-sleep 5
-screencapture -x -o -l"$window_id" "$output" || {
-  echo "macOS Screen Recording permission is required" >&2
+window_id=""
+for _ in {1..20}; do
+  if window_id="$(swift "$root/scripts/macos-window-id.swift" "$client_pid" 'Miazcore — Diagnostic World' 2>/dev/null)"; then
+    break
+  fi
+  kill -0 "$client_pid" 2>/dev/null || { cat "$log" >&2; exit 1; }
+  sleep 0.25
+done
+[[ -n "$window_id" ]] || {
+  echo "exact Diagnostic World window was not found within 5 seconds of proof readiness" >&2
   exit 1
 }
-python3 "$root/scripts/validate-compositor-png.py" "$output"
+# The client continues rendering until this adapter acknowledges a plausible
+# candidate. This is capture settlement within one proof, never a gate retry.
+for attempt in {1..20}; do
+  screencapture -x -o -l"$window_id" "$capture_candidate" || {
+    echo "macOS Screen Recording permission is required" >&2
+    exit 1
+  }
+  if python3 "$root/scripts/validate-compositor-png.py" "$capture_candidate"; then
+    mv "$capture_candidate" "$output"
+    : >"$captured"
+    break
+  fi
+  sleep 0.5
+done
+rm -f "$capture_candidate"
+[[ -f "$captured" ]] || {
+  echo "macOS compositor did not present a plausible Bevy frame within 10 seconds" >&2
+  exit 1
+}
 
 for _ in {1..40}; do
   ! kill -0 "$client_pid" 2>/dev/null && break

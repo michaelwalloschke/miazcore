@@ -115,6 +115,7 @@ impl Plugin for RenderProofPlugin {
         app.insert_resource(RenderProofState {
             output: self.output.clone(),
             ready: self.output.with_extension("ready"),
+            captured: self.output.with_extension("captured"),
             stage: self.output.with_extension("stage"),
             frame: 0,
             requested: false,
@@ -143,6 +144,7 @@ impl Plugin for RenderProofPlugin {
 struct RenderProofState {
     output: PathBuf,
     ready: PathBuf,
+    captured: PathBuf,
     stage: PathBuf,
     frame: u32,
     requested: bool,
@@ -180,6 +182,10 @@ fn script_render_proof(
     }
     if proof.ready.exists() {
         fs::remove_file(&proof.ready).expect("old proof ready marker should be replaceable");
+    }
+    if proof.captured.exists() {
+        fs::remove_file(&proof.captured)
+            .expect("old proof capture acknowledgement should be replaceable");
     }
     if proof.stage.exists() {
         fs::remove_file(&proof.stage).expect("old proof stage marker should be replaceable");
@@ -442,9 +448,13 @@ fn capture_render_proof(
                 );
                 proof.ready_written = true;
             }
-            CaptureBackend::External => {
+            CaptureBackend::External if proof.captured.exists() => {
                 proof.requested = true;
             }
+            // The macOS adapter captures a private candidate and only creates
+            // `captured` after a plausible image has been atomically published
+            // to `output`. Keep presenting Metal content until then.
+            CaptureBackend::External => {}
         }
     } else if proof.frame > capture_frame.saturating_add(TIMEOUT_FRAME) {
         panic!("timed out while waiting for the rendered proof artifact");

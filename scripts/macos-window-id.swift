@@ -8,7 +8,11 @@ guard CommandLine.arguments.count == 3,
 }
 
 let title = CommandLine.arguments[2]
-let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+// A proof window can be moved to another Space while a preceding Metal gate
+// releases the compositor. The PID and exact title still make this an exact
+// application-window lookup; limiting enumeration to the current Space does
+// not improve its safety and makes the adapter flaky.
+let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
 guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
     fputs("unable to enumerate macOS windows\n", stderr)
     exit(65)
