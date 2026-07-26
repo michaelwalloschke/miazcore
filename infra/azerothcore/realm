@@ -14,7 +14,7 @@ project="${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}"
 compose+=(--project-name "$project")
 
 usage() {
-    echo "usage: $0 {init-secrets|up|down|health|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
+    echo "usage: $0 {init-secrets|up|down|health|wait-character-offline|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
     exit 64
 }
 
@@ -121,6 +121,34 @@ PY
           [[ "$realm_count" == 1 && "$account_id" =~ ^[0-9]+$ && "$character_count" == 1 ]]
         '
         echo "health: orchestration, processes, host sockets, and semantic fixture passed"
+        ;;
+    # Test-only settlement boundary. A successful client logout closes its
+    # socket before AzerothCore has necessarily persisted `online=0`; callers
+    # must wait for that single state transition before one final health gate.
+    wait-character-offline)
+        require_secrets
+        # The client can exit only after its fresh-reconnect proof; the realm's
+        # asynchronous logout persistence has observed up to ~46 seconds after
+        # that hand-off. Leave margin while remaining a bounded test wait.
+        deadline_seconds="${MIAZCORE_LOGOUT_SETTLEMENT_TIMEOUT_SECONDS:-60}"
+        [[ "$deadline_seconds" =~ ^[1-9][0-9]*$ ]] || {
+            echo "logout settlement timeout must be a positive whole number" >&2
+            exit 64
+        }
+        for ((elapsed = 0; elapsed < deadline_seconds; elapsed++)); do
+            if "${compose[@]}" exec -T database bash -ceu '
+              export MYSQL_PWD="$(cat /run/secrets/database_root_password)"
+              mysql --user=root --batch --skip-column-names acore_characters --execute="
+                SELECT COUNT(*) FROM characters
+                WHERE name=\"Miaztest\" AND online=0 AND transguid=0;" | grep -qx 1
+            '; then
+                echo "logout settlement: reference character is offline"
+                exit 0
+            fi
+            sleep 1
+        done
+        echo "timed out waiting ${deadline_seconds}s for reference character logout settlement" >&2
+        exit 1
         ;;
     smoke)
         require_secrets

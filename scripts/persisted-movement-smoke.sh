@@ -62,4 +62,5 @@ if rg -n -i '(password|session[_ -]?key|raw packet|credential)' "${miazcore_imag
     echo "persisted movement smoke failed: secret-bearing vocabulary in sidecar" >&2
     exit 1
 fi
+./infra/azerothcore/realm wait-character-offline
 ./infra/azerothcore/realm health
