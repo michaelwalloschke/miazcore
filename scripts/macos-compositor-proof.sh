@@ -27,7 +27,15 @@ done
 [[ -f "$ready" ]] || { echo "timed out waiting for external compositor proof readiness" >&2; exit 1; }
 
 window_id="$(swift "$root/scripts/macos-window-id.swift" "$client_pid" 'Miazcore — Diagnostic World')" || exit $?
-screencapture -x -o -l"$window_id" "$output" || { echo "macOS Screen Recording permission is required" >&2; exit 1; }
+# The app deliberately stays open until this exact path appears.  Let the
+# compositor present stable Metal contents before the one final capture: after
+# a previous Metal gate, CoreGraphics can otherwise expose only window chrome.
+sleep 5
+screencapture -x -o -l"$window_id" "$output" || {
+  echo "macOS Screen Recording permission is required" >&2
+  exit 1
+}
+python3 "$root/scripts/validate-compositor-png.py" "$output"
 
 for _ in {1..40}; do
   ! kill -0 "$client_pid" 2>/dev/null && break

@@ -20,6 +20,10 @@ use crate::{
 const CAPTURE_FRAME: u32 = 180;
 const TIMEOUT_FRAME: u32 = 900;
 const PRESENTATION_SETTLE_DELAY: Duration = Duration::from_secs(3);
+// AzerothCore persists a saving logout asynchronously. This deadline covers
+// that settlement plus the fresh login/world reconnect independently of the
+// platform's rendered frame rate.
+const PERSISTED_PROOF_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct RenderProofPlugin {
     output: PathBuf,
@@ -122,6 +126,7 @@ impl Plugin for RenderProofPlugin {
             movement_turned: false,
             movement_stopped: false,
             verification_requested: false,
+            verification_started_at: None,
             mode: self.mode,
             backend: self.backend,
         })
@@ -149,6 +154,7 @@ struct RenderProofState {
     movement_turned: bool,
     movement_stopped: bool,
     verification_requested: bool,
+    verification_started_at: Option<Instant>,
     mode: RenderProofMode,
     backend: CaptureBackend,
 }
@@ -330,6 +336,7 @@ fn capture_render_proof(
                         "persisted proof should accept the semantic verification operation",
                     );
                     proof.verification_requested = true;
+                    proof.verification_started_at = Some(Instant::now());
                     return;
                 }
                 client_session::ClientPhase::MovementReady
@@ -355,8 +362,10 @@ fn capture_render_proof(
                     "persisted movement proof failed before fresh reconnect comparison: {:?}",
                     view.snapshot().latest_failure
                 ),
-                _ if proof.frame > TIMEOUT_FRAME => {
-                    panic!("timed out while waiting for persisted movement proof")
+                _ if persisted_proof_timed_out(proof.verification_started_at, Instant::now()) => {
+                    panic!(
+                        "timed out while waiting for persisted movement proof after {PERSISTED_PROOF_TIMEOUT:?}"
+                    )
                 }
                 _ => return,
             }
@@ -440,6 +449,10 @@ fn capture_render_proof(
     } else if proof.frame > capture_frame.saturating_add(TIMEOUT_FRAME) {
         panic!("timed out while waiting for the rendered proof artifact");
     }
+}
+
+fn persisted_proof_timed_out(started_at: Option<Instant>, now: Instant) -> bool {
+    started_at.is_some_and(|started| now.duration_since(started) >= PERSISTED_PROOF_TIMEOUT)
 }
 
 fn proof_sidecar(
@@ -590,13 +603,29 @@ fn json_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
+    };
 
     use client_session::{ClientPhase, ClientSnapshot, SanitizedIdentity, WorldPose};
 
     use crate::{DiagnosticMode, DiagnosticPresentation, DiagnosticView};
 
-    use super::{RenderProofMode, json_string, proof_sidecar};
+    use super::{
+        PERSISTED_PROOF_TIMEOUT, RenderProofMode, json_string, persisted_proof_timed_out,
+        proof_sidecar,
+    };
+
+    #[test]
+    fn persisted_proof_timeout_is_elapsed_time_not_rendered_frame_count() {
+        let now = Instant::now();
+        assert!(!persisted_proof_timed_out(Some(now), now));
+        let expired = now
+            .checked_sub(PERSISTED_PROOF_TIMEOUT + Duration::from_millis(1))
+            .expect("the monotonic test clock should be sufficiently advanced");
+        assert!(persisted_proof_timed_out(Some(expired), now));
+    }
 
     #[test]
     fn sidecar_is_semantic_offline_evidence_without_secret_fields() {
