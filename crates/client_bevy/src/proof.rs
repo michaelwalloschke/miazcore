@@ -289,21 +289,32 @@ fn capture_render_proof(
                 .expect("live movement proof should accept turn intent");
             proof.movement_turned = true;
         }
-        if proof.movement_started_at.is_some_and(|started| {
-            started.elapsed()
-                >= if matches!(
-                    proof.mode,
-                    RenderProofMode::PersistedMovement | RenderProofMode::PersistedMovementRejected
-                ) {
-                    if proof.mode == RenderProofMode::PersistedMovementRejected {
+        let persisted_target_reached = if proof.mode == RenderProofMode::PersistedMovement {
+            view.snapshot()
+                .entry_anchor
+                .zip(view.snapshot().predicted_pose)
+                .is_some_and(|(anchor, predicted)| {
+                    anchor.map_id == predicted.map_id
+                        && (predicted.east - anchor.east).hypot(predicted.north - anchor.north)
+                            >= 3.0
+                })
+        } else {
+            false
+        };
+        if persisted_target_reached
+            || proof.movement_started_at.is_some_and(|started| {
+                started.elapsed()
+                    >= if proof.mode == RenderProofMode::PersistedMovement {
+                        // Fails closed if a malformed session never advances
+                        // the predicted pose to the three-metre target.
+                        Duration::from_secs(2)
+                    } else if proof.mode == RenderProofMode::PersistedMovementRejected {
                         Duration::from_millis(100)
                     } else {
-                        Duration::from_millis(450)
+                        PRESENTATION_SETTLE_DELAY
                     }
-                } else {
-                    PRESENTATION_SETTLE_DELAY
-                }
-        }) {
+            })
+        {
             session
                 .publish_movement_intent(client_session::MovementIntent::idle())
                 .expect("live movement proof should accept stop intent");
