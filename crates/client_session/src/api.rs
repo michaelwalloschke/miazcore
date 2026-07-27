@@ -354,7 +354,11 @@ pub enum CommandKind {
 pub enum ControlCommand {
     StartEntry,
     BeginMovementProof,
-    MovementTransition { engaged: bool },
+    /// Internal deterministic driver for the repository-owned persistence proof.
+    ScriptedMovementProofStart,
+    MovementTransition {
+        engaged: bool,
+    },
     Disconnect,
     RetryEntry,
 }
@@ -365,7 +369,9 @@ impl ControlCommand {
         match self {
             Self::StartEntry => CommandKind::StartEntry,
             Self::BeginMovementProof => CommandKind::BeginMovementProof,
-            Self::MovementTransition { .. } => CommandKind::MovementTransition,
+            Self::ScriptedMovementProofStart | Self::MovementTransition { .. } => {
+                CommandKind::MovementTransition
+            }
             Self::Disconnect => CommandKind::Disconnect,
             Self::RetryEntry => CommandKind::RetryEntry,
         }

@@ -243,12 +243,18 @@ fn capture_render_proof(
                     proof.mode,
                     RenderProofMode::LiveMovement | RenderProofMode::PersistedMovement
                 ) {
-                    session
-                        .publish_movement_intent(
-                            client_session::MovementIntent::planar(1.0, 0.0)
-                                .expect("finite proof intent"),
-                        )
-                        .expect("live movement proof should accept start intent");
+                    if proof.mode == RenderProofMode::PersistedMovement {
+                        session
+                            .start_scripted_persisted_movement()
+                            .expect("persisted proof should start its worker-owned movement");
+                    } else {
+                        session
+                            .publish_movement_intent(
+                                client_session::MovementIntent::planar(1.0, 0.0)
+                                    .expect("finite proof intent"),
+                            )
+                            .expect("live movement proof should accept start intent");
+                    }
                     proof.movement_started_at = Some(Instant::now());
                 } else if proof.mode == RenderProofMode::PersistedMovementRejected {
                     // A zero-distance stopped pose is the deterministic lower
@@ -306,9 +312,11 @@ fn capture_render_proof(
             })
         };
         if stop_due {
-            session
-                .publish_movement_intent(client_session::MovementIntent::idle())
-                .expect("live movement proof should accept stop intent");
+            if proof.mode != RenderProofMode::PersistedMovement {
+                session
+                    .publish_movement_intent(client_session::MovementIntent::idle())
+                    .expect("live movement proof should accept stop intent");
+            }
             proof.movement_stopped = true;
             proof.capture_not_before = Some(Instant::now() + Duration::from_millis(500));
         } else {

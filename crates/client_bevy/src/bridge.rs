@@ -144,6 +144,17 @@ impl SessionBridge {
             .send_control(ControlCommand::BeginMovementProof)
     }
 
+    /// Start the repository-owned deterministic movement segment used only by
+    /// the persisted-movement proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker cannot accept the semantic command.
+    pub fn start_scripted_persisted_movement(&self) -> Result<(), BoundaryError> {
+        self.session
+            .send_control(ControlCommand::ScriptedMovementProofStart)
+    }
+
     /// Publish replaceable camera-relative movement intent through the session
     /// boundary.  Protocol serialization remains worker-owned.
     ///

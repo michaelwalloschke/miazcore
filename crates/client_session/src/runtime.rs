@@ -1159,6 +1159,7 @@ where
     let mut prediction =
         GroundPrediction::new(anchor, run_speed).ok_or_else(entry_invariant_failure)?;
     let mut active_intent = crate::MovementIntent::idle();
+    let mut scripted_stop_distance = None;
     let mut last_tick = clock.now();
     let tick_interval = Duration::from_nanos(1_000_000_000 / 60);
     transport.begin_retained_receive().map_err(|error| {
@@ -1250,6 +1251,25 @@ where
                     return Err(DiscoveryError::Boundary);
                 }
             }
+            Ok(ControlCommand::ScriptedMovementProofStart) => {
+                boundary.control_consumed();
+                active_intent = crate::MovementIntent::planar(1.0, 0.0)
+                    .expect("scripted proof direction is finite");
+                scripted_stop_distance = Some(2.5_f32);
+                prediction.align_heading(active_intent);
+                write_movement_frame(
+                    transport,
+                    client_stream,
+                    clock,
+                    MSG_MOVE_START_FORWARD,
+                    active_mover,
+                    prediction.predicted(),
+                    true,
+                )?;
+                if !boundary.movement_submitted_state(prediction.predicted(), false) {
+                    return Err(DiscoveryError::Boundary);
+                }
+            }
             Ok(command) => {
                 boundary.control_consumed();
                 let failure = ClientFailure::new(
@@ -1281,6 +1301,24 @@ where
             let tick = prediction.tick(active_intent);
             boundary.predict_movement(tick.pose);
             heartbeat_due |= active_intent.engaged() && tick.heartbeat;
+            if let Some(target) = scripted_stop_distance
+                && (tick.pose.east - anchor.east).hypot(tick.pose.north - anchor.north) >= target
+            {
+                active_intent = crate::MovementIntent::idle();
+                scripted_stop_distance = None;
+                write_movement_frame(
+                    transport,
+                    client_stream,
+                    clock,
+                    MSG_MOVE_STOP,
+                    active_mover,
+                    tick.pose,
+                    false,
+                )?;
+                if !boundary.movement_submitted_state(tick.pose, true) {
+                    return Err(DiscoveryError::Boundary);
+                }
+            }
         }
         if heartbeat_due {
             write_movement_frame(
