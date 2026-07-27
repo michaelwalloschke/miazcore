@@ -34,13 +34,32 @@ run_gate() {
     fi
 }
 
+# macOS presents a Bevy/Metal window differently when the process has no
+# terminal. `script` keeps a pseudoterminal for the actual GUI gate while also
+# retaining its transcript as the canonical attempt log.
+run_gui_gate() {
+    local name="$1"; shift
+    local log="$attempt/logs/$name.log"
+    command -v script >/dev/null || {
+        echo "World-entry Acceptance requires script(1) for the macOS GUI gate" >&2
+        exit 64
+    }
+    if script -q "$log" "$@"; then
+        printf 'PASS\n' >"$attempt/$name.result"
+    else
+        printf 'FAIL\n' >"$attempt/$name.result"
+        echo "World-entry Acceptance $name gate failed; retained: $log" >&2
+        exit 1
+    fi
+}
+
 run_gate deterministic cargo test --locked -p client_protocol --tests
 run_gate session cargo test --locked -p client_session
 run_gate bevy scripts/check.sh
-run_gate metal scripts/render-smoke.sh
+run_gui_gate metal scripts/render-smoke.sh
 run_gate live-character scripts/live-character-selection.sh
-run_gate live-proof scripts/persisted-movement-smoke.sh
-run_gate live-negatives scripts/persisted-movement-negative-probes.sh
+run_gui_gate live-proof scripts/persisted-movement-smoke.sh
+run_gui_gate live-negatives scripts/persisted-movement-negative-probes.sh
 
 cp "$manual_attestation" "$attempt/artifacts/manual-attestation.json"
 cp artifacts/render-smoke/offline-diagnostic-world.png "$attempt/artifacts/metal.png"
