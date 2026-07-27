@@ -289,32 +289,19 @@ fn capture_render_proof(
                 .expect("live movement proof should accept turn intent");
             proof.movement_turned = true;
         }
-        let persisted_target_reached = if proof.mode == RenderProofMode::PersistedMovement {
-            view.snapshot()
-                .entry_anchor
-                .zip(view.snapshot().predicted_pose)
-                .is_some_and(|(anchor, predicted)| {
-                    anchor.map_id == predicted.map_id
-                        && (predicted.east - anchor.east).hypot(predicted.north - anchor.north)
-                            >= 3.0
-                })
-        } else {
-            false
-        };
-        if persisted_target_reached
-            || proof.movement_started_at.is_some_and(|started| {
-                started.elapsed()
-                    >= if proof.mode == RenderProofMode::PersistedMovement {
-                        // Fails closed if a malformed session never advances
-                        // the predicted pose to the three-metre target.
-                        Duration::from_secs(2)
-                    } else if proof.mode == RenderProofMode::PersistedMovementRejected {
-                        Duration::from_millis(100)
-                    } else {
-                        PRESENTATION_SETTLE_DELAY
-                    }
-            })
-        {
+        if proof.movement_started_at.is_some_and(|started| {
+            started.elapsed()
+                >= if proof.mode == RenderProofMode::PersistedMovement {
+                    // The session boundary publishes on a coarser cadence than
+                    // Bevy's rendered pose. Stop early enough that a delayed
+                    // observation remains inside the canonical 2–4 m band.
+                    Duration::from_millis(250)
+                } else if proof.mode == RenderProofMode::PersistedMovementRejected {
+                    Duration::from_millis(100)
+                } else {
+                    PRESENTATION_SETTLE_DELAY
+                }
+        }) {
             session
                 .publish_movement_intent(client_session::MovementIntent::idle())
                 .expect("live movement proof should accept stop intent");
