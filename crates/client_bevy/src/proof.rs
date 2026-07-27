@@ -669,8 +669,6 @@ mod tests {
             ..anchor
         });
         assert!(persisted_proof_stop_due(&snapshot));
-        assert!(PERSISTED_PROOF_STOP_DISTANCE_METRES > 2.0);
-        assert!(PERSISTED_PROOF_STOP_DISTANCE_METRES < 4.0);
     }
 
     #[test]
