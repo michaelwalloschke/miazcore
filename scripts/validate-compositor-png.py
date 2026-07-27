@@ -37,12 +37,21 @@ def main() -> None:
         data = bitmap.read_bytes()
     offset = int.from_bytes(data[10:14], "little")
     bits_per_pixel = int.from_bytes(data[28:30], "little")
-    if bits_per_pixel != 32:
-        fail("screenshot did not convert to 32-bit bitmap")
+    if bits_per_pixel not in {24, 32}:
+        fail("screenshot did not convert to an RGB bitmap")
+    bitmap_width = int.from_bytes(data[18:22], "little", signed=True)
+    bitmap_height = abs(int.from_bytes(data[22:26], "little", signed=True))
+    if bitmap_width != width or bitmap_height != height:
+        fail("screenshot bitmap dimensions changed during conversion")
+    bytes_per_pixel = bits_per_pixel // 8
+    row_bytes = ((width * bits_per_pixel + 31) // 32) * 4
     pixels = data[offset:]
+    if len(pixels) < row_bytes * height:
+        fail("screenshot bitmap pixel data is truncated")
     if not any(
-        any(channel > 8 for channel in pixel[:3])
-        for pixel in zip(*[iter(pixels)] * 4)
+        any(pixels[row * row_bytes + column * bytes_per_pixel + channel] > 8 for channel in range(3))
+        for row in range(height)
+        for column in range(width)
     ):
         fail("screenshot is all black")
 
