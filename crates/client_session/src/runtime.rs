@@ -1306,6 +1306,11 @@ where
             {
                 active_intent = crate::MovementIntent::idle();
                 scripted_stop_distance = None;
+                // A catch-up interval can have made a heartbeat due before
+                // this exact tick reached the proof target.  The stop edge is
+                // authoritative: never publish a later coalesced heartbeat
+                // with moving flags after it.
+                heartbeat_due = false;
                 write_movement_frame(
                     transport,
                     client_stream,
@@ -2665,6 +2670,66 @@ mod tests {
             (snapshot.submitted_pose.unwrap().east - anchor.east)
                 .hypot(snapshot.submitted_pose.unwrap().north - anchor.north)
                 <= crate::movement::REFERENCE_MOVEMENT_ENVELOPE_METRES
+        );
+    }
+
+    #[test]
+    fn scripted_persisted_proof_stops_inside_the_canonical_distance_window() {
+        let key = login_session_key();
+        let anchor = WorldPose {
+            map_id: 0,
+            east: 10.0,
+            north: -4.0,
+            elevation: 83.5,
+            orientation: 0.0,
+        };
+        let (client, mut boundary) = new_boundary(config().identity().clone()).unwrap();
+        let client = Arc::new(client);
+        let state = ScriptState::default();
+        let mut transport = ControlInjectingTransport {
+            client: Arc::clone(&client),
+            actions: VecDeque::from([
+                MovementTestAction::ScriptedPersistedProofStart,
+                MovementTestAction::Pending,
+                MovementTestAction::Disconnect,
+            ]),
+            state: state.clone(),
+        };
+        // One delayed worker turn intentionally crosses several fixed ticks;
+        // the scripted stop must still occur at its own bounded target.
+        let mut clock = FixedClock::sequence([
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(400),
+        ]);
+        let mut stream = WorldClientStream::new(&key);
+
+        assert!(
+            run_live_movement_loop(
+                &mut boundary,
+                &mut transport,
+                &mut clock,
+                client_protocol::IncrementalWorldServerDecoder::new(&key),
+                &mut stream,
+                anchor,
+                0x1122_3344_5566_7788,
+                7.0,
+            )
+            .is_ok()
+        );
+
+        let frames = decode_client_frames(&state.writes.lock().unwrap());
+        assert_eq!(
+            frames.iter().map(|(opcode, _)| *opcode).collect::<Vec<_>>(),
+            [MSG_MOVE_START_FORWARD, MSG_MOVE_STOP],
+            "the scripted proof must not append a moving heartbeat after stop"
+        );
+        let submitted = client.snapshot().submitted_pose.unwrap();
+        let distance = (submitted.east - anchor.east).hypot(submitted.north - anchor.north);
+        assert!(
+            (2.0..=4.0).contains(&distance),
+            "scripted persisted movement must stop inside the smoke contract, got {distance}m"
         );
     }
 
@@ -4776,6 +4841,7 @@ mod tests {
 
     enum MovementTestAction {
         Pending,
+        ScriptedPersistedProofStart,
         TurnNorth,
         FocusLoss,
         Disconnect,
@@ -4811,6 +4877,10 @@ mod tests {
                 .unwrap_or(MovementTestAction::Pending)
             {
                 MovementTestAction::Pending => {}
+                MovementTestAction::ScriptedPersistedProofStart => self
+                    .client
+                    .send_control(ControlCommand::ScriptedMovementProofStart)
+                    .expect("scripted proof start should be accepted"),
                 MovementTestAction::TurnNorth => self
                     .client
                     .publish_movement_intent(crate::MovementIntent::planar(0.0, 1.0).unwrap())
