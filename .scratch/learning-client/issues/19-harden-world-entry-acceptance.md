@@ -1,7 +1,7 @@
 # Harden and Accept the World-entry Candidate
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Prove Persisted Movement and Recover Explicitly](18-prove-persisted-movement.md)
 
 ## Parent
@@ -14,25 +14,31 @@ Add no new product behavior. Close only the coverage, reliability, and evidence 
 
 ## Entry gate
 
-- [ ] Ticket 18 passes deterministically and through the real production application.
-- [ ] Its canonical Movement Proof, two negative probes, remaining deferrals, and exact predecessor commit are recorded.
+- [x] Ticket 18 passes deterministically and through the real production application.
+- [x] Its canonical Movement Proof, two negative probes, remaining deferrals, and exact predecessor commit are recorded.
 
 ## Acceptance criteria
 
-- [ ] Missing golden, malformed-input, property, and fuzz-regression coverage required by the accepted protocol boundary is complete.
-- [ ] Missing deterministic session, queue-pressure, timeout/EOF/rejection/write-fault, shutdown/retry, and Movement Proof coverage is complete.
-- [ ] Missing Bevy adapter, ordering, phase/input gating, event/snapshot projection, correction, visible failure, dependency-boundary, and redaction coverage is complete.
-- [ ] Repository-owned gate commands and the exclusive Reference Realm lock are consolidated and deterministic.
-- [ ] The deterministic core gate passes codecs, crypto, framing, session transitions, queue pressure, malformed input, redaction, and movement behavior without real sockets, sleeps, Docker, Bevy rendering, or timing tolerances.
-- [ ] The Bevy/platform gate passes formatting, locked native workspace/all-target compilation, Clippy with warnings denied, native tests, dependency assertions, `MinimalPlugins` scenarios, scripted Metal smoke, and the Windows MSVC compile tripwire.
-- [ ] The isolated live Reference Realm gate passes clean bootstrap, exact fixture identity, authenticated world entry, authoritative self state, the reset-scoped canonical Movement Proof, and both negative probes using reconnect as the sole success oracle.
-- [ ] The manual macOS gate passes real entry, accepted viewport/camera/focus controls, smooth movement, visible Rendered/Submitted/Realm-observed diagnostics, correction/failure presentation, Movement Proof, and clean disconnect.
-- [ ] One clean `candidate_sha` passes all four gates without skips, expected failures, automatic retries, warning suppression, secret/session leakage, or missing evidence.
-- [ ] Every attempt remains visible; a later pass does not erase earlier diagnostic failures.
-- [ ] The Acceptance Evidence Bundle contains the accepted identity, commands, versions, results, semantic diagnostics, manual attestation, hashes, and explicit deferrals while excluding credentials, session material, and raw packet dumps.
-- [ ] The bundle validates against its manifest, is hashed, curated, and recorded in an evidence-only commit.
-- [ ] Disposable prototype code is removed only where equivalent production evidence now exists; its research records and referenced evidence remain.
-- [ ] The final exit evidence and exact accepted commit are recorded.
+- [x] Missing golden, malformed-input, property, and fuzz-regression coverage required by the accepted protocol boundary is complete.
+- [x] Missing deterministic session, queue-pressure, timeout/EOF/rejection/write-fault, shutdown/retry, and Movement Proof coverage is complete.
+- [x] Missing Bevy adapter, ordering, phase/input gating, event/snapshot projection, correction, visible failure, dependency-boundary, and redaction coverage is complete.
+- [x] Repository-owned gate commands and the exclusive Reference Realm lock are consolidated and deterministic.
+- [x] The deterministic core gate passes codecs, crypto, framing, session transitions, queue pressure, malformed input, redaction, and movement behavior without real sockets, sleeps, Docker, Bevy rendering, or timing tolerances.
+- [x] The Bevy/platform gate passes formatting, locked native workspace/all-target compilation, Clippy with warnings denied, native tests, dependency assertions, `MinimalPlugins` scenarios, scripted Metal smoke, and the Windows MSVC compile tripwire.
+- [x] The isolated live Reference Realm gate passes clean bootstrap, exact fixture identity, authenticated world entry, authoritative self state, the reset-scoped canonical Movement Proof, and both negative probes using reconnect as the sole success oracle.
+- [x] The manual macOS gate passes real entry, accepted viewport/camera/focus controls, smooth movement, visible Rendered/Submitted/Realm-observed diagnostics, correction/failure presentation, Movement Proof, and clean disconnect.
+- [x] One clean `candidate_sha` passes all four gates without skips, expected failures, automatic retries, warning suppression, secret/session leakage, or missing evidence.
+- [x] Every attempt remains visible; a later pass does not erase earlier diagnostic failures.
+- [x] The Acceptance Evidence Bundle contains the accepted identity, commands, versions, results, semantic diagnostics, manual attestation, hashes, and explicit deferrals while excluding credentials, session material, and raw packet dumps.
+- [x] The bundle validates against its manifest, is hashed, curated, and recorded in an evidence-only commit.
+- [x] Disposable prototype code is removed only where equivalent production evidence now exists; its research records and referenced evidence remain.
+- [x] The final exit evidence and exact accepted commit are recorded.
+
+## Exit evidence
+
+Accepted candidate: `f263b33257b7a57ba1691746dffb20cb21625aa8`.
+Validated curated bundle: `artifacts/world-entry-acceptance/20260727T201304Z-f263b33257b7`.
+All deterministic, session, Bevy/platform, Metal, live-character, persisted-movement, negative-probe, and manual gates passed. Windows runtime remains explicitly deferred.
 
 ## Explicit deferrals
 
