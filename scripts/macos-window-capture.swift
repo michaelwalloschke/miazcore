@@ -18,15 +18,15 @@ application.setActivationPolicy(.accessory)
 
 enum CaptureError: LocalizedError {
     case exactWindowNotFound
-    case noCompositedSceneFrame
+    case noCompositedSceneFrame(String)
     case pngEncodingFailed
 
     var errorDescription: String? {
         switch self {
         case .exactWindowNotFound:
             "exact Diagnostic World window was not found"
-        case .noCompositedSceneFrame:
-            "ScreenCaptureKit did not deliver a composited Diagnostic World frame"
+        case let .noCompositedSceneFrame(diagnostic):
+            "ScreenCaptureKit did not deliver a composited Diagnostic World frame (\(diagnostic))"
         case .pngEncodingFailed:
             "exact Diagnostic World window could not be encoded as PNG"
         }
@@ -38,6 +38,8 @@ final class CompositedFrameOutput: NSObject, SCStreamOutput {
     private let context = CIContext()
     private let lock = NSLock()
     private var continuation: CheckedContinuation<CGImage, Error>?
+    private var framesObserved = 0
+    private var greatestDetailRange: UInt8 = 0
 
     func waitForCompositedFrame() async throws -> CGImage {
         try await withCheckedThrowingContinuation { continuation in
@@ -54,11 +56,13 @@ final class CompositedFrameOutput: NSObject, SCStreamOutput {
     ) {
         guard outputType == .screen,
               let pixelBuffer = sampleBuffer.imageBuffer,
-              let image = context.createCGImage(CIImage(cvPixelBuffer: pixelBuffer), from: CIImage(cvPixelBuffer: pixelBuffer).extent),
-              hasSceneDetail(image) else { return }
+              let image = context.createCGImage(CIImage(cvPixelBuffer: pixelBuffer), from: CIImage(cvPixelBuffer: pixelBuffer).extent) else { return }
+        let detailRange = sceneDetailRange(image)
         lock.lock()
-        let continuation = self.continuation
-        self.continuation = nil
+        framesObserved += 1
+        greatestDetailRange = max(greatestDetailRange, detailRange)
+        let continuation = detailRange >= 24 ? self.continuation : nil
+        if continuation != nil { self.continuation = nil }
         lock.unlock()
         continuation?.resume(returning: image)
     }
@@ -67,17 +71,18 @@ final class CompositedFrameOutput: NSObject, SCStreamOutput {
         lock.lock()
         let continuation = self.continuation
         self.continuation = nil
+        let diagnostic = "frames=\(framesObserved), greatest-content-range=\(greatestDetailRange)"
         lock.unlock()
-        continuation?.resume(throwing: CaptureError.noCompositedSceneFrame)
+        continuation?.resume(throwing: CaptureError.noCompositedSceneFrame(diagnostic))
     }
 
     // Ignore the title bar and require visible colour variation in the window
     // content. A ScreenCaptureKit frame containing only the dark window chrome
     // must not acknowledge the client proof.
-    private func hasSceneDetail(_ image: CGImage) -> Bool {
+    private func sceneDetailRange(_ image: CGImage) -> UInt8 {
         guard image.bitsPerPixel == 32,
               let bytes = image.dataProvider?.data,
-              let base = CFDataGetBytePtr(bytes) else { return false }
+              let base = CFDataGetBytePtr(bytes) else { return 0 }
         let startX = image.width / 10
         let endX = image.width * 9 / 10
         let startY = image.height / 6
@@ -94,7 +99,7 @@ final class CompositedFrameOutput: NSObject, SCStreamOutput {
                 maximum = max(maximum, value)
             }
         }
-        return maximum - minimum >= 24
+        return maximum - minimum
     }
 }
 
@@ -114,6 +119,7 @@ func captureExactWindow() async throws {
     let configuration = SCStreamConfiguration()
     configuration.width = max(1, Int(window.frame.width.rounded(.up)))
     configuration.height = max(1, Int(window.frame.height.rounded(.up)))
+    configuration.pixelFormat = kCVPixelFormatType_32BGRA
     configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
     configuration.queueDepth = 8
     configuration.showsCursor = false
@@ -128,7 +134,7 @@ func captureExactWindow() async throws {
         group.addTask {
             try await Task.sleep(for: .seconds(8))
             frameOutput.fail()
-            throw CaptureError.noCompositedSceneFrame
+            throw CaptureError.noCompositedSceneFrame("frame deadline exceeded")
         }
         let image = try await group.next()!
         group.cancelAll()
