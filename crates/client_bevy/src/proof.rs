@@ -635,8 +635,8 @@ mod tests {
     use crate::{DiagnosticMode, DiagnosticPresentation, DiagnosticView};
 
     use super::{
-        PERSISTED_PROOF_STOP_DISTANCE_METRES, PERSISTED_PROOF_TIMEOUT, RenderProofMode,
-        json_string, persisted_proof_stop_due, persisted_proof_timed_out, proof_sidecar,
+        PERSISTED_PROOF_TIMEOUT, RenderProofMode, json_string, persisted_proof_stop_due,
+        persisted_proof_timed_out, proof_sidecar,
     };
 
     #[test]
