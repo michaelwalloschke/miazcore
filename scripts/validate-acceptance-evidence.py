@@ -144,7 +144,12 @@ def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation
 def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
     manual_path = artifacts / "manual-attestation.json"
     manual = read_json(manual_path)
-    allow_keys(manual, {"candidate_sha", "result", "checks"}, manual_path, "manual attestation")
+    allow_keys(
+        manual,
+        {"schema", "candidate_sha", "result", "host", "checks", "notes"},
+        manual_path,
+        "manual attestation",
+    )
     if manual.get("candidate_sha") != candidate or manual.get("result") != "PASS":
         raise SystemExit("manual attestation must PASS for the exact candidate SHA")
     if set(manual.get("checks", {})) != MANUAL_CHECKS or set(manual["checks"].values()) != {"PASS"}:
