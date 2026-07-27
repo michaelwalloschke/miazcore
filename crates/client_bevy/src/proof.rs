@@ -24,6 +24,10 @@ const PRESENTATION_SETTLE_DELAY: Duration = Duration::from_secs(3);
 // that settlement plus the fresh login/world reconnect independently of the
 // platform's rendered frame rate.
 const PERSISTED_PROOF_TIMEOUT: Duration = Duration::from_secs(90);
+// Stop from submitted-session evidence rather than a UI wall-clock interval:
+// a renderer stall must not let fixed-step catch-up consume the full 5 m
+// Reference Movement Envelope before the scripted stop reaches the worker.
+const PERSISTED_PROOF_STOP_DISTANCE_METRES: f32 = 2.1;
 
 pub struct RenderProofPlugin {
     output: PathBuf,
@@ -289,19 +293,19 @@ fn capture_render_proof(
                 .expect("live movement proof should accept turn intent");
             proof.movement_turned = true;
         }
-        if proof.movement_started_at.is_some_and(|started| {
-            started.elapsed()
-                >= if proof.mode == RenderProofMode::PersistedMovement {
-                    // The session boundary publishes on a coarser cadence than
-                    // Bevy's rendered pose. Stop early enough that a delayed
-                    // observation remains inside the canonical 2–4 m band.
-                    Duration::from_millis(250)
-                } else if proof.mode == RenderProofMode::PersistedMovementRejected {
-                    Duration::from_millis(100)
-                } else {
-                    PRESENTATION_SETTLE_DELAY
-                }
-        }) {
+        let stop_due = if proof.mode == RenderProofMode::PersistedMovement {
+            persisted_proof_stop_due(view.snapshot())
+        } else {
+            proof.movement_started_at.is_some_and(|started| {
+                started.elapsed()
+                    >= if proof.mode == RenderProofMode::PersistedMovementRejected {
+                        Duration::from_millis(100)
+                    } else {
+                        PRESENTATION_SETTLE_DELAY
+                    }
+            })
+        };
+        if stop_due {
             session
                 .publish_movement_intent(client_session::MovementIntent::idle())
                 .expect("live movement proof should accept stop intent");
@@ -463,6 +467,16 @@ fn persisted_proof_timed_out(started_at: Option<Instant>, now: Instant) -> bool 
     started_at.is_some_and(|started| now.duration_since(started) >= PERSISTED_PROOF_TIMEOUT)
 }
 
+fn persisted_proof_stop_due(snapshot: &client_session::ClientSnapshot) -> bool {
+    snapshot
+        .entry_anchor
+        .zip(snapshot.submitted_pose)
+        .is_some_and(|(anchor, submitted)| {
+            (submitted.east - anchor.east).hypot(submitted.north - anchor.north)
+                >= PERSISTED_PROOF_STOP_DISTANCE_METRES
+        })
+}
+
 fn proof_sidecar(
     view: &DiagnosticView,
     presentation: &DiagnosticPresentation,
@@ -621,8 +635,8 @@ mod tests {
     use crate::{DiagnosticMode, DiagnosticPresentation, DiagnosticView};
 
     use super::{
-        PERSISTED_PROOF_TIMEOUT, RenderProofMode, json_string, persisted_proof_timed_out,
-        proof_sidecar,
+        PERSISTED_PROOF_STOP_DISTANCE_METRES, PERSISTED_PROOF_TIMEOUT, RenderProofMode,
+        json_string, persisted_proof_stop_due, persisted_proof_timed_out, proof_sidecar,
     };
 
     #[test]
@@ -633,6 +647,30 @@ mod tests {
             .checked_sub(PERSISTED_PROOF_TIMEOUT + Duration::from_millis(1))
             .expect("the monotonic test clock should be sufficiently advanced");
         assert!(persisted_proof_timed_out(Some(expired), now));
+    }
+
+    #[test]
+    fn persisted_proof_stops_from_submitted_distance_not_wall_clock() {
+        let identity =
+            SanitizedIdentity::new(1, "Miazcore Reference Realm", "Miaztest", 12_340).unwrap();
+        let anchor = WorldPose {
+            map_id: 0,
+            east: 10.0,
+            north: -4.0,
+            elevation: 83.5,
+            orientation: 0.0,
+        };
+        let mut snapshot = ClientSnapshot::offline(identity);
+        snapshot.entry_anchor = Some(anchor);
+        snapshot.submitted_pose = Some(anchor);
+        assert!(!persisted_proof_stop_due(&snapshot));
+        snapshot.submitted_pose = Some(WorldPose {
+            east: 12.1,
+            ..anchor
+        });
+        assert!(persisted_proof_stop_due(&snapshot));
+        assert!(PERSISTED_PROOF_STOP_DISTANCE_METRES > 2.0);
+        assert!(PERSISTED_PROOF_STOP_DISTANCE_METRES < 4.0);
     }
 
     #[test]
