@@ -17,7 +17,7 @@ GATES = (
     "deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives", "manual",
 )
 REQUIRED = {
-    "commands.json", "gate-results.json", "manual-attestation.json", "metal.json", "metal.png",
+    "commands.json", "execution.json", "gate-results.json", "manual-attestation.json", "metal.json", "metal.png",
     "negative-reconnect.json", "negative-short.json", "persisted-movement.json", "versions.json",
 }
 DEFERRALS = [
@@ -71,6 +71,119 @@ def assert_redacted(value, path: pathlib.Path) -> None:
         raise SystemExit(f"sensitive vocabulary in {path.name}")
 
 
+def allow_keys(value, allowed: set[str], path: pathlib.Path, label: str) -> None:
+    if not isinstance(value, dict) or not set(value).issubset(allowed):
+        raise SystemExit(f"unexpected fields in {path.name} {label}")
+
+
+def validate_pose(value, path: pathlib.Path, label: str) -> None:
+    if value is not None:
+        allow_keys(value, {"space", "map_id", "east", "north", "elevation", "orientation"}, path, label)
+
+
+def validate_sidecars(artifacts: pathlib.Path) -> None:
+    metal_path = artifacts / "metal.json"
+    metal = read_json(metal_path)
+    allow_keys(metal, {"schema", "phase", "network", "realm_id", "client_build", "character", "rendered_pose", "submitted_pose", "realm_observed_pose"}, metal_path, "metal evidence")
+    if metal.get("phase") != "Offline":
+        raise SystemExit("metal semantic evidence is incomplete")
+    for name in ("rendered_pose", "submitted_pose", "realm_observed_pose"):
+        validate_pose(metal.get(name), metal_path, name)
+
+    persisted_path = artifacts / "persisted-movement.json"
+    persisted = read_json(persisted_path)
+    movement_fields = {"schema", "phase", "network", "realm_id", "client_build", "character", "run_speed", "movement_publication", "entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose", "failure_context", "movement_proof"}
+    allow_keys(persisted, movement_fields, persisted_path, "persisted movement evidence")
+    if persisted.get("phase") != "PersistedMovementCompared":
+        raise SystemExit("persisted movement semantic evidence is incomplete")
+    for name in ("entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose"):
+        validate_pose(persisted.get(name), persisted_path, name)
+    proof = persisted.get("movement_proof")
+    allow_keys(proof, {"source", "expected", "observed", "delta_metres", "tolerance_metres", "passed"}, persisted_path, "movement proof")
+    if not proof.get("passed"):
+        raise SystemExit("persisted movement semantic evidence is incomplete")
+    validate_pose(proof.get("expected"), persisted_path, "movement proof expected")
+    validate_pose(proof.get("observed"), persisted_path, "movement proof observed")
+
+    short_path = artifacts / "negative-short.json"
+    short = read_json(short_path)
+    allow_keys(short, movement_fields, short_path, "short negative evidence")
+    if short.get("phase") != "PersistedMovementRejected":
+        raise SystemExit("short negative semantic evidence is incomplete")
+    for name in ("entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose"):
+        validate_pose(short.get(name), short_path, name)
+    if short.get("movement_proof") is not None:
+        raise SystemExit("short negative evidence must not contain a success proof")
+
+    reconnect_path = artifacts / "negative-reconnect.json"
+    reconnect = read_json(reconnect_path)
+    allow_keys(reconnect, {"schema", "phase", "network", "oracle", "database_derived_success"}, reconnect_path, "reconnect negative evidence")
+    if reconnect.get("phase") != "ReconnectUnavailableRejected":
+        raise SystemExit("reconnect negative semantic evidence is incomplete")
+
+
+def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation: pathlib.Path) -> dict:
+    marker = attempt / "candidate_sha"
+    if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != candidate:
+        raise SystemExit("attempt candidate does not match the accepted candidate")
+    machine_gates = GATES[:-1]
+    result_paths = {gate: attempt / f"{gate}.result" for gate in machine_gates}
+    if any(not path.is_file() or path.read_text(encoding="utf-8") != "PASS\n" for path in result_paths.values()):
+        raise SystemExit("attempt does not contain one PASS result for every machine gate")
+    return {
+        "schema": "miazcore.acceptance-execution.v1",
+        "candidate_sha": candidate,
+        "attempt_id": attempt.name,
+        "gate_result_hashes": {
+            **{gate: sha256(path) for gate, path in result_paths.items()},
+            "manual": sha256(manual_attestation),
+        },
+    }
+
+
+def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
+    manual_path = artifacts / "manual-attestation.json"
+    manual = read_json(manual_path)
+    allow_keys(manual, {"candidate_sha", "result", "checks"}, manual_path, "manual attestation")
+    if manual.get("candidate_sha") != candidate or manual.get("result") != "PASS":
+        raise SystemExit("manual attestation must PASS for the exact candidate SHA")
+    if set(manual.get("checks", {})) != MANUAL_CHECKS or set(manual["checks"].values()) != {"PASS"}:
+        raise SystemExit("manual attestation must explicitly PASS every required check")
+
+    commands_path = artifacts / "commands.json"
+    commands = read_json(commands_path)
+    allow_keys(commands, {"schema", "commands"}, commands_path, "commands")
+    if commands.get("schema") != "miazcore.acceptance-commands.v1" or set(commands.get("commands", {})) != set(GATES):
+        raise SystemExit("curated commands must describe every acceptance gate")
+    if any(not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command) for command in commands["commands"].values()):
+        raise SystemExit("curated commands must be non-empty string arrays")
+
+    results_path = artifacts / "gate-results.json"
+    results = read_json(results_path)
+    allow_keys(results, {"schema", "results"}, results_path, "gate results")
+    if results.get("schema") != "miazcore.acceptance-results.v1" or results.get("results") != {gate: "PASS" for gate in GATES}:
+        raise SystemExit("curated gate results must explicitly PASS every required gate")
+
+    versions_path = artifacts / "versions.json"
+    versions = read_json(versions_path)
+    allow_keys(versions, {"schema", "versions"}, versions_path, "versions")
+    if versions.get("schema") != "miazcore.acceptance-versions.v1" or set(versions.get("versions", {})) != {"git", "rustc", "cargo", "python", "platform"}:
+        raise SystemExit("curated versions must record every required tool")
+    if not all(isinstance(value, str) and value for value in versions["versions"].values()):
+        raise SystemExit("curated versions must be non-empty strings")
+
+    execution_path = artifacts / "execution.json"
+    execution = read_json(execution_path)
+    allow_keys(execution, {"schema", "candidate_sha", "attempt_id", "gate_result_hashes"}, execution_path, "execution")
+    if execution.get("schema") != "miazcore.acceptance-execution.v1" or execution.get("candidate_sha") != candidate or not re.fullmatch(r"[0-9A-Za-z._-]+", execution.get("attempt_id", "")):
+        raise SystemExit("curated execution provenance is malformed")
+    hashes = execution.get("gate_result_hashes", {})
+    if set(hashes) != set(GATES) or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
+        raise SystemExit("curated execution provenance must bind every gate result")
+
+    validate_sidecars(artifacts)
+
+
 def command_version(command: list[str]) -> str:
     try:
         return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
@@ -78,7 +191,7 @@ def command_version(command: list[str]) -> str:
         raise SystemExit(f"could not record tool version {' '.join(command)}: {error}") from error
 
 
-def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path) -> None:
+def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path, attempt: pathlib.Path) -> None:
     artifacts = root / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=False)
     sources = {
@@ -93,6 +206,8 @@ def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path)
         if not source.is_file():
             raise SystemExit(f"missing curated source artifact: {source}")
         shutil.copyfile(source, artifacts / name)
+    execution = recorded_execution(attempt, candidate, manual_attestation)
+    (artifacts / "execution.json").write_text(json.dumps(execution, indent=2) + "\n")
     commands = {
         "deterministic": ["cargo", "test", "--locked", "-p", "client_protocol", "--tests"],
         "session": ["cargo", "test", "--locked", "-p", "client_session"],
@@ -118,21 +233,11 @@ def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path)
 
 def create(root: pathlib.Path, candidate: str) -> None:
     paths = artifact_files(root)
-    manual = read_json(root / "artifacts/manual-attestation.json")
-    if manual.get("candidate_sha") != candidate or manual.get("result") != "PASS":
-        raise SystemExit("manual attestation must PASS for the exact candidate SHA")
-    if set(manual.get("checks", {})) != MANUAL_CHECKS or set(manual["checks"].values()) != {"PASS"}:
-        raise SystemExit("manual attestation must explicitly PASS every required check")
-    results = read_json(root / "artifacts/gate-results.json")
-    if results.get("schema") != "miazcore.acceptance-results.v1" or results.get("results") != {gate: "PASS" for gate in GATES}:
-        raise SystemExit("curated gate results must explicitly PASS every required gate")
-    commands = read_json(root / "artifacts/commands.json")
-    if commands.get("schema") != "miazcore.acceptance-commands.v1" or set(commands.get("commands", {})) != set(GATES):
-        raise SystemExit("curated commands must describe every acceptance gate")
+    validate_bundle_content(root / "artifacts", candidate)
     manifest = {
         "schema": "miazcore.world-entry-acceptance.v2",
         "candidate_sha": candidate,
-        "results": results["results"],
+        "results": read_json(root / "artifacts/gate-results.json")["results"],
         "artifacts": {path.name: sha256(path) for path in paths},
         "deferrals": DEFERRALS,
     }
@@ -165,33 +270,25 @@ def validate(root: pathlib.Path) -> None:
             raise SystemExit(f"hash mismatch for {path.name}")
         if path.suffix == ".json":
             assert_redacted(read_json(path), path)
+    validate_bundle_content(root / "artifacts", manifest["candidate_sha"])
     png = root / "artifacts/metal.png"
     if not png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
         raise SystemExit("metal evidence is not a PNG")
-    if read_json(root / "artifacts/metal.json").get("phase") != "Offline":
-        raise SystemExit("metal semantic evidence is incomplete")
-    proof = read_json(root / "artifacts/persisted-movement.json")
-    if proof.get("phase") != "PersistedMovementCompared" or not proof.get("movement_proof", {}).get("passed"):
-        raise SystemExit("persisted movement semantic evidence is incomplete")
-    if read_json(root / "artifacts/negative-short.json").get("phase") != "PersistedMovementRejected":
-        raise SystemExit("short negative semantic evidence is incomplete")
-    if read_json(root / "artifacts/negative-reconnect.json").get("phase") != "ReconnectUnavailableRejected":
-        raise SystemExit("reconnect negative semantic evidence is incomplete")
     print(f"validated World-entry Acceptance bundle for {manifest['candidate_sha']}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3 or sys.argv[1] not in {"create", "curate", "validate"}:
-        raise SystemExit("usage: validate-acceptance-evidence.py {create|curate|validate} BUNDLE [CANDIDATE_SHA] [MANUAL_ATTESTATION]")
+        raise SystemExit("usage: validate-acceptance-evidence.py {create|curate|validate} BUNDLE [CANDIDATE_SHA] [MANUAL_ATTESTATION] [ATTEMPT]")
     root = pathlib.Path(sys.argv[2])
     if sys.argv[1] == "create":
         if len(sys.argv) != 4:
             raise SystemExit("create requires a candidate SHA")
         create(root, sys.argv[3])
     elif sys.argv[1] == "curate":
-        if len(sys.argv) != 5:
-            raise SystemExit("curate requires a candidate SHA and manual attestation")
-        curate(root, sys.argv[3], pathlib.Path(sys.argv[4]))
+        if len(sys.argv) != 6:
+            raise SystemExit("curate requires a candidate SHA, manual attestation, and attempt")
+        curate(root, sys.argv[3], pathlib.Path(sys.argv[4]), pathlib.Path(sys.argv[5]))
     else:
         if len(sys.argv) != 3:
             raise SystemExit("validate accepts only a bundle path")

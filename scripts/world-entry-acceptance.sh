@@ -22,6 +22,7 @@ candidate_sha="$(git rev-parse HEAD)"
 attempt="artifacts/world-entry-attempts/$(date -u +%Y%m%dT%H%M%SZ)-${candidate_sha:0:12}"
 bundle="artifacts/world-entry-acceptance/$(basename "$attempt")"
 mkdir -p "$attempt/logs"
+printf '%s\n' "$candidate_sha" >"$attempt/candidate_sha"
 
 run_gate() {
     local name="$1"; shift
@@ -62,6 +63,6 @@ run_gate live-character scripts/live-character-selection.sh
 run_gui_gate live-proof scripts/persisted-movement-smoke.sh
 run_gui_gate live-negatives scripts/persisted-movement-negative-probes.sh
 
-python3 scripts/validate-acceptance-evidence.py curate "$bundle" "$candidate_sha" "$manual_attestation"
+python3 scripts/validate-acceptance-evidence.py curate "$bundle" "$candidate_sha" "$manual_attestation" "$attempt"
 python3 scripts/validate-acceptance-evidence.py validate "$bundle"
 echo "World-entry Acceptance passed: $bundle (diagnostic attempt retained: $attempt)"
