@@ -74,6 +74,8 @@ run_gate session cargo test --locked -p client_session
 run_gate bevy scripts/check.sh
 run_gate metal scripts/render-smoke.sh
 retain_sidecars metal artifacts/render-smoke/offline-diagnostic-world.png artifacts/render-smoke/offline-diagnostic-world.json
+mv "$attempt/sidecars/offline-diagnostic-world.png" "$attempt/sidecars/metal.png"
+mv "$attempt/sidecars/offline-diagnostic-world.json" "$attempt/sidecars/metal.json"
 run_gate live-character scripts/live-character-selection.sh
 # ScreenCaptureKit captures these proofs only when the client remains a direct
 # child of the permission-bearing desktop process.

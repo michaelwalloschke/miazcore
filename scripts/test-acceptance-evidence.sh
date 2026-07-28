@@ -35,6 +35,20 @@ PY
 
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"
+attempt="$bundle/attempt"
+curated="$bundle/curated"
+mkdir -p "$attempt/sidecars"
+printf '%s\n' "$candidate" >"$attempt/candidate_sha"
+for gate in deterministic session bevy metal live-character live-proof live-negatives; do
+    printf 'PASS\n' >"$attempt/$gate.result"
+done
+cp "$bundle/artifacts/metal.png" "$attempt/sidecars/metal.png"
+cp "$bundle/artifacts/metal.json" "$attempt/sidecars/metal.json"
+cp "$bundle/artifacts/persisted-movement.json" "$attempt/sidecars/persisted-movement.json"
+cp "$bundle/artifacts/negative-short.json" "$attempt/sidecars/negative-short.json"
+cp "$bundle/artifacts/negative-reconnect.json" "$attempt/sidecars/negative-reconnect.json"
+python3 "$root/scripts/validate-acceptance-evidence.py" curate "$curated" "$candidate" "$bundle/artifacts/manual-attestation.json" "$attempt"
+python3 "$root/scripts/validate-acceptance-evidence.py" validate "$curated"
 printf 'FAIL\n' >"$bundle/artifacts/live-proof.result"
 if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
     echo "acceptance validator accepted a changed retained gate result" >&2
