@@ -2691,6 +2691,7 @@ mod tests {
             actions: VecDeque::from([
                 MovementTestAction::ScriptedPersistedProofStart,
                 MovementTestAction::Pending,
+                MovementTestAction::Pending,
                 MovementTestAction::Disconnect,
             ]),
             state: state.clone(),
@@ -2700,6 +2701,7 @@ mod tests {
         let mut clock = FixedClock::sequence([
             Duration::ZERO,
             Duration::ZERO,
+            Duration::from_millis(100),
             Duration::from_millis(400),
             Duration::from_millis(400),
         ]);
@@ -2722,8 +2724,8 @@ mod tests {
         let frames = decode_client_frames(&state.writes.lock().unwrap());
         assert_eq!(
             frames.iter().map(|(opcode, _)| *opcode).collect::<Vec<_>>(),
-            [MSG_MOVE_START_FORWARD, MSG_MOVE_STOP],
-            "the scripted proof must not append a moving heartbeat after stop"
+            [MSG_MOVE_START_FORWARD, MSG_MOVE_HEARTBEAT, MSG_MOVE_STOP],
+            "the scripted proof must retain its ordered start/heartbeat/stop sequence without appending a moving heartbeat after stop"
         );
         let submitted = client.snapshot().submitted_pose.unwrap();
         let distance = (submitted.east - anchor.east).hypot(submitted.north - anchor.north);
