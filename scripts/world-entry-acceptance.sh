@@ -74,9 +74,13 @@ run_gate bevy scripts/check.sh
 run_gui_gate metal scripts/render-smoke.sh
 retain_sidecars metal artifacts/render-smoke/offline-diagnostic-world.png artifacts/render-smoke/offline-diagnostic-world.json
 run_gate live-character scripts/live-character-selection.sh
-run_gui_gate live-proof scripts/persisted-movement-smoke.sh
+# ScreenCaptureKit captures the live proof only when the client remains a
+# direct child of the permission-bearing desktop process.  `script(1)` is
+# required for the standalone Metal gate, but its PTY intermediary yields no
+# live-window frames on this macOS host.
+run_gate live-proof scripts/persisted-movement-smoke.sh
 retain_sidecars live-proof artifacts/persisted-movement-smoke.json
-run_gui_gate live-negatives scripts/persisted-movement-negative-probes.sh
+run_gate live-negatives scripts/persisted-movement-negative-probes.sh
 retain_sidecars live-negatives artifacts/persisted-movement-short-negative.json artifacts/persisted-movement-reconnect-unavailable.json
 
 python3 scripts/validate-acceptance-evidence.py curate "$bundle" "$candidate_sha" "$manual_attestation" "$attempt"
