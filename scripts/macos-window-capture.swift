@@ -141,21 +141,36 @@ func captureExactWindow() async throws {
         Task { try? await stream.stopCapture() }
     }
 
-    let image = try await withThrowingTaskGroup(of: CGImage.self) { group in
-        group.addTask { try await frameTask.value }
-        group.addTask {
-            // ScreenCaptureKit owns its own delivery schedule.  Let the
-            // registered frame continuation report its observed-frame
-            // diagnostics after a generous bounded wait instead of racing it
-            // with a second generic timeout error.
-            try await Task.sleep(for: .seconds(15))
-            frameOutput.fail()
-            try await Task.sleep(for: .seconds(3600))
-            throw CancellationError()
+    let image: CGImage
+    do {
+        image = try await withThrowingTaskGroup(of: CGImage.self) { group in
+            group.addTask { try await frameTask.value }
+            group.addTask {
+                // ScreenCaptureKit owns its own delivery schedule.  Let the
+                // registered frame continuation report its observed-frame
+                // diagnostics after a generous bounded wait instead of racing it
+                // with a second generic timeout error.
+                try await Task.sleep(for: .seconds(15))
+                frameOutput.fail()
+                try await Task.sleep(for: .seconds(3600))
+                throw CancellationError()
+            }
+            let image = try await group.next()!
+            group.cancelAll()
+            return image
         }
-        let image = try await group.next()!
-        group.cancelAll()
-        return image
+    } catch {
+        // Some macOS compositor runs deliver only black SCStream frames for a
+        // valid, on-screen Metal window.  Ask ScreenCaptureKit for one image
+        // of that same desktop-independent window; never widen to the desktop.
+        do {
+            image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration
+            )
+        } catch {
+            throw error
+        }
     }
     guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
         throw CaptureError.pngEncodingFailed
