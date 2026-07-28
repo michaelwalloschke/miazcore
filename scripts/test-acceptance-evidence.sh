@@ -8,13 +8,16 @@ trap cleanup EXIT INT TERM
 mkdir -p "$bundle/artifacts"
 candidate="0123456789abcdef0123456789abcdef01234567"
 cat >"$bundle/artifacts/manual-attestation.json" <<JSON
-{"candidate_sha":"$candidate","result":"PASS","checks":{"metal_and_diagnostic_world_visible":"PASS","phase_progression_and_pre_ready_input_gating":"PASS","orbit_zoom_focus_and_camera_relative_wasd":"PASS","smooth_heading_aligned_movement_without_height_drift":"PASS","rendered_submitted_realm_observed_diagnostics":"PASS","movement_proof_freeze_and_reconnect_evidence":"PASS","correction_and_visible_failure_presentation":"PASS","clean_disconnect_and_realm_health":"PASS"}}
+{"schema":"miazcore.world-entry-manual-attestation.v1","candidate_sha":"$candidate","result":"PASS","host":"test host","checks":{"metal_and_diagnostic_world_visible":"PASS","phase_progression_and_pre_ready_input_gating":"PASS","orbit_zoom_focus_and_camera_relative_wasd":"PASS","smooth_heading_aligned_movement_without_height_drift":"PASS","rendered_submitted_realm_observed_diagnostics":"PASS","movement_proof_freeze_and_reconnect_evidence":"PASS","correction_and_visible_failure_presentation":"PASS","clean_disconnect_and_realm_health":"PASS"},"notes":"manual diagnostic review passed"}
 JSON
 printf '\211PNG\r\n\032\nmetal-placeholder\n' >"$bundle/artifacts/metal.png"
-printf '{"phase":"Offline"}\n' >"$bundle/artifacts/metal.json"
-printf '{"phase":"PersistedMovementCompared","movement_proof":{"passed":true}}\n' >"$bundle/artifacts/persisted-movement.json"
-printf '{"phase":"PersistedMovementRejected"}\n' >"$bundle/artifacts/negative-short.json"
-printf '{"phase":"ReconnectUnavailableRejected"}\n' >"$bundle/artifacts/negative-reconnect.json"
+write_valid_sidecars() {
+    printf '%s\n' '{"schema":"miazcore.render-proof.v1","phase":"Offline","network":"disabled","realm_id":1,"client_build":12340,"character":"Test","rendered_pose":{"space":"offline-display","east":2.4,"north":-1.6,"elevation":0.0},"submitted_pose":null,"realm_observed_pose":null}' >"$bundle/artifacts/metal.json"
+    printf '%s\n' '{"schema":"miazcore.live-render-proof.v1","phase":"PersistedMovementCompared","network":"reference-realm","realm_id":1,"client_build":12340,"character":"Test","run_speed":7.0,"movement_publication":"bounded-ground","entry_anchor":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"predicted_pose":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"rendered_pose":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"submitted_pose":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"realm_observed_pose":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"failure_context":null,"movement_proof":{"source":"fresh-reconnect-login-verify-world","expected":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"observed":{"map_id":0,"east":3.5,"north":2.0,"elevation":3.0,"orientation":1.0},"delta_metres":0.0,"tolerance_metres":0.25,"passed":true}}' >"$bundle/artifacts/persisted-movement.json"
+    printf '%s\n' '{"schema":"miazcore.live-render-proof.v1","phase":"PersistedMovementRejected","network":"reference-realm","realm_id":1,"client_build":12340,"character":"Test","run_speed":7.0,"movement_publication":"bounded-ground","entry_anchor":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"predicted_pose":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"rendered_pose":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"submitted_pose":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"realm_observed_pose":{"map_id":0,"east":1.0,"north":2.0,"elevation":3.0,"orientation":0.0},"failure_context":"movement proof requires a submitted stopped pose","movement_proof":null}' >"$bundle/artifacts/negative-short.json"
+    printf '%s\n' '{"schema":"miazcore.persisted-movement-negative-probe.v1","phase":"ReconnectUnavailableRejected","network":"reference-realm","oracle":"client-reconnect-failure","database_derived_success":false}' >"$bundle/artifacts/negative-reconnect.json"
+}
+write_valid_sidecars
 printf '{"schema":"miazcore.acceptance-commands.v1","commands":{"deterministic":["cargo"],"session":["cargo"],"bevy":["scripts/check.sh"],"metal":["scripts/render-smoke.sh"],"live-character":["scripts/live-character-selection.sh"],"live-proof":["scripts/persisted-movement-smoke.sh"],"live-negatives":["scripts/persisted-movement-negative-probes.sh"],"manual":["manual-attestation"]}}\n' >"$bundle/artifacts/commands.json"
 printf '{"schema":"miazcore.acceptance-results.v1","results":{"deterministic":"PASS","session":"PASS","bevy":"PASS","metal":"PASS","live-character":"PASS","live-proof":"PASS","live-negatives":"PASS","manual":"PASS"}}\n' >"$bundle/artifacts/gate-results.json"
 printf '{"schema":"miazcore.acceptance-versions.v1","versions":{"git":"test","rustc":"test","cargo":"test","python":"test","platform":"test"}}\n' >"$bundle/artifacts/versions.json"
@@ -66,14 +69,33 @@ if python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$ca
     echo "acceptance validator accepted an unallowlisted curated field" >&2
     exit 1
 fi
-printf '{"phase":"Offline"}\n' >"$bundle/artifacts/metal.json"
+write_valid_sidecars
+python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
+mkdir "$bundle/artifacts/unexpected-directory"
+if python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"; then
+    echo "acceptance validator accepted an unexpected artifact directory" >&2
+    exit 1
+fi
+rmdir "$bundle/artifacts/unexpected-directory"
+python3 - "$bundle/artifacts/persisted-movement.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text())
+del data["movement_proof"]["expected"]
+path.write_text(json.dumps(data) + "\n")
+PY
+if python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"; then
+    echo "acceptance validator accepted incomplete movement proof evidence" >&2
+    exit 1
+fi
+write_valid_sidecars
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 printf 'stale sidecar\n' >"$bundle/artifacts/negative-short.json"
 if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
     echo "acceptance validator accepted stale semantic evidence" >&2
     exit 1
 fi
-printf '{"phase":"PersistedMovementRejected"}\n' >"$bundle/artifacts/negative-short.json"
+write_valid_sidecars
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 rm "$bundle/artifacts/metal.png"
 if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
@@ -81,7 +103,22 @@ if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; t
     exit 1
 fi
 printf '\211PNG\r\n\032\nmetal-placeholder\n' >"$bundle/artifacts/metal.png"
-printf '{"phase":"Offline"}\n' >"$bundle/artifacts/metal.json"
+write_valid_sidecars
+python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
+python3 - "$bundle/artifacts/manual-attestation.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text())
+data["notes"] = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5QUJDREVGR0g="
+path.write_text(json.dumps(data) + "\n")
+PY
+if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
+    echo "acceptance validator accepted encoded material in manual evidence" >&2
+    exit 1
+fi
+cat >"$bundle/artifacts/manual-attestation.json" <<JSON
+{"schema":"miazcore.world-entry-manual-attestation.v1","candidate_sha":"$candidate","result":"PASS","host":"test host","checks":{"metal_and_diagnostic_world_visible":"PASS","phase_progression_and_pre_ready_input_gating":"PASS","orbit_zoom_focus_and_camera_relative_wasd":"PASS","smooth_heading_aligned_movement_without_height_drift":"PASS","rendered_submitted_realm_observed_diagnostics":"PASS","movement_proof_freeze_and_reconnect_evidence":"PASS","correction_and_visible_failure_presentation":"PASS","clean_disconnect_and_realm_health":"PASS"},"notes":"manual diagnostic review passed"}
+JSON
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 python3 - "$bundle/artifacts/versions.json" <<'PY'
 import json, pathlib, sys

@@ -2,6 +2,7 @@
 """Create and validate a curated, redacted World-entry Acceptance bundle."""
 import hashlib
 import json
+import math
 import pathlib
 import platform
 import re
@@ -13,6 +14,7 @@ SENSITIVE = re.compile(
     r"password|credential|session[_ -]?(?:key|material|token)|secret|cipher|raw packet|auth(?:entication)?[_ -]?proof",
     re.I,
 )
+RAW_BLOB = re.compile(r"(?:[0-9a-f]{64,}|[A-Za-z0-9+/]{64,}={0,2})", re.I)
 MACHINE_GATES = (
     "deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives",
 )
@@ -51,7 +53,10 @@ def artifact_files(root: pathlib.Path):
     directory = root / "artifacts"
     if not directory.is_dir():
         raise SystemExit("bundle artifacts directory is missing")
-    found = {path.name for path in directory.iterdir() if path.is_file()}
+    entries = list(directory.iterdir())
+    if any(not path.is_file() or path.is_symlink() for path in entries):
+        raise SystemExit("bundle artifacts must contain only regular files")
+    found = {path.name for path in entries}
     if found != REQUIRED:
         raise SystemExit(f"bundle artifacts must be exactly {sorted(REQUIRED)}")
     return sorted(directory / name for name in REQUIRED)
@@ -64,17 +69,20 @@ def read_json(path: pathlib.Path):
         raise SystemExit(f"invalid curated JSON artifact {path.name}: {error}") from error
 
 
-def assert_redacted(value, path: pathlib.Path) -> None:
+def assert_redacted(value, path: pathlib.Path, *, hash_values: bool = False) -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
             if SENSITIVE.search(str(key)):
                 raise SystemExit(f"sensitive field name in {path.name}")
-            assert_redacted(nested, path)
+            assert_redacted(nested, path, hash_values=hash_values or key in {"gate_result_hashes", "gate_evidence_hashes"})
     elif isinstance(value, list):
         for nested in value:
-            assert_redacted(nested, path)
+            assert_redacted(nested, path, hash_values=hash_values)
     elif isinstance(value, str) and SENSITIVE.search(value):
         raise SystemExit(f"sensitive vocabulary in {path.name}")
+    elif isinstance(value, str):
+        if any(ord(character) < 32 for character in value) or (not hash_values and RAW_BLOB.search(value)):
+            raise SystemExit(f"raw or encoded material in {path.name}")
 
 
 def allow_keys(value, allowed: set[str], path: pathlib.Path, label: str) -> None:
@@ -82,49 +90,91 @@ def allow_keys(value, allowed: set[str], path: pathlib.Path, label: str) -> None
         raise SystemExit(f"unexpected fields in {path.name} {label}")
 
 
-def validate_pose(value, path: pathlib.Path, label: str) -> None:
-    if value is not None:
-        allow_keys(value, {"space", "map_id", "east", "north", "elevation", "orientation"}, path, label)
+def require_keys(value, required: set[str], path: pathlib.Path, label: str) -> None:
+    if not isinstance(value, dict) or set(value) != required:
+        raise SystemExit(f"incomplete fields in {path.name} {label}")
+
+
+def require_string(value, path: pathlib.Path, label: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"invalid string in {path.name} {label}")
+
+
+def require_integer(value, path: pathlib.Path, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SystemExit(f"invalid integer in {path.name} {label}")
+
+
+def require_number(value, path: pathlib.Path, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise SystemExit(f"invalid number in {path.name} {label}")
+
+
+def validate_pose(value, path: pathlib.Path, label: str, *, offline: bool = False) -> None:
+    required = {"space", "east", "north", "elevation"} if offline else {"map_id", "east", "north", "elevation", "orientation"}
+    require_keys(value, required, path, label)
+    if offline:
+        if value["space"] != "offline-display":
+            raise SystemExit(f"invalid offline pose space in {path.name}")
+    else:
+        require_integer(value["map_id"], path, f"{label}.map_id")
+    for coordinate in required - {"space", "map_id"}:
+        require_number(value[coordinate], path, f"{label}.{coordinate}")
 
 
 def validate_sidecars(artifacts: pathlib.Path) -> None:
     metal_path = artifacts / "metal.json"
     metal = read_json(metal_path)
-    allow_keys(metal, {"schema", "phase", "network", "realm_id", "client_build", "character", "rendered_pose", "submitted_pose", "realm_observed_pose"}, metal_path, "metal evidence")
-    if metal.get("phase") != "Offline":
+    require_keys(metal, {"schema", "phase", "network", "realm_id", "client_build", "character", "rendered_pose", "submitted_pose", "realm_observed_pose"}, metal_path, "metal evidence")
+    if metal["schema"] != "miazcore.render-proof.v1" or metal["phase"] != "Offline" or metal["network"] != "disabled" or metal["submitted_pose"] is not None or metal["realm_observed_pose"] is not None:
         raise SystemExit("metal semantic evidence is incomplete")
-    for name in ("rendered_pose", "submitted_pose", "realm_observed_pose"):
-        validate_pose(metal.get(name), metal_path, name)
+    require_integer(metal["realm_id"], metal_path, "realm_id")
+    require_integer(metal["client_build"], metal_path, "client_build")
+    require_string(metal["character"], metal_path, "character")
+    validate_pose(metal["rendered_pose"], metal_path, "rendered_pose", offline=True)
 
     persisted_path = artifacts / "persisted-movement.json"
     persisted = read_json(persisted_path)
     movement_fields = {"schema", "phase", "network", "realm_id", "client_build", "character", "run_speed", "movement_publication", "entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose", "failure_context", "movement_proof"}
-    allow_keys(persisted, movement_fields, persisted_path, "persisted movement evidence")
-    if persisted.get("phase") != "PersistedMovementCompared":
+    require_keys(persisted, movement_fields, persisted_path, "persisted movement evidence")
+    if persisted["schema"] != "miazcore.live-render-proof.v1" or persisted["phase"] != "PersistedMovementCompared" or persisted["network"] != "reference-realm" or persisted["movement_publication"] != "bounded-ground" or persisted["failure_context"] is not None:
         raise SystemExit("persisted movement semantic evidence is incomplete")
     for name in ("entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose"):
-        validate_pose(persisted.get(name), persisted_path, name)
-    proof = persisted.get("movement_proof")
-    allow_keys(proof, {"source", "expected", "observed", "delta_metres", "tolerance_metres", "passed"}, persisted_path, "movement proof")
-    if not proof.get("passed"):
+        validate_pose(persisted[name], persisted_path, name)
+    require_integer(persisted["realm_id"], persisted_path, "realm_id")
+    require_integer(persisted["client_build"], persisted_path, "client_build")
+    require_string(persisted["character"], persisted_path, "character")
+    require_number(persisted["run_speed"], persisted_path, "run_speed")
+    proof = persisted["movement_proof"]
+    require_keys(proof, {"source", "expected", "observed", "delta_metres", "tolerance_metres", "passed"}, persisted_path, "movement proof")
+    if proof["source"] != "fresh-reconnect-login-verify-world" or proof["passed"] is not True:
         raise SystemExit("persisted movement semantic evidence is incomplete")
-    validate_pose(proof.get("expected"), persisted_path, "movement proof expected")
-    validate_pose(proof.get("observed"), persisted_path, "movement proof observed")
+    validate_pose(proof["expected"], persisted_path, "movement proof expected")
+    validate_pose(proof["observed"], persisted_path, "movement proof observed")
+    require_number(proof["delta_metres"], persisted_path, "movement proof delta_metres")
+    require_number(proof["tolerance_metres"], persisted_path, "movement proof tolerance_metres")
+    if proof["delta_metres"] > proof["tolerance_metres"]:
+        raise SystemExit("persisted movement proof exceeds its tolerance")
 
     short_path = artifacts / "negative-short.json"
     short = read_json(short_path)
-    allow_keys(short, movement_fields, short_path, "short negative evidence")
-    if short.get("phase") != "PersistedMovementRejected":
+    require_keys(short, movement_fields, short_path, "short negative evidence")
+    if short["schema"] != "miazcore.live-render-proof.v1" or short["phase"] != "PersistedMovementRejected" or short["network"] != "reference-realm" or short["movement_publication"] != "bounded-ground":
         raise SystemExit("short negative semantic evidence is incomplete")
     for name in ("entry_anchor", "predicted_pose", "rendered_pose", "submitted_pose", "realm_observed_pose"):
-        validate_pose(short.get(name), short_path, name)
+        validate_pose(short[name], short_path, name)
+    require_integer(short["realm_id"], short_path, "realm_id")
+    require_integer(short["client_build"], short_path, "client_build")
+    require_string(short["character"], short_path, "character")
+    require_number(short["run_speed"], short_path, "run_speed")
+    require_string(short["failure_context"], short_path, "failure_context")
     if short.get("movement_proof") is not None:
         raise SystemExit("short negative evidence must not contain a success proof")
 
     reconnect_path = artifacts / "negative-reconnect.json"
     reconnect = read_json(reconnect_path)
-    allow_keys(reconnect, {"schema", "phase", "network", "oracle", "database_derived_success"}, reconnect_path, "reconnect negative evidence")
-    if reconnect.get("phase") != "ReconnectUnavailableRejected":
+    require_keys(reconnect, {"schema", "phase", "network", "oracle", "database_derived_success"}, reconnect_path, "reconnect negative evidence")
+    if reconnect["schema"] != "miazcore.persisted-movement-negative-probe.v1" or reconnect["phase"] != "ReconnectUnavailableRejected" or reconnect["network"] != "reference-realm" or reconnect["oracle"] != "client-reconnect-failure" or reconnect["database_derived_success"] is not False:
         raise SystemExit("reconnect negative semantic evidence is incomplete")
 
 
@@ -157,14 +207,16 @@ def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation
 def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
     manual_path = artifacts / "manual-attestation.json"
     manual = read_json(manual_path)
-    allow_keys(
+    require_keys(
         manual,
         {"schema", "candidate_sha", "result", "host", "checks", "notes"},
         manual_path,
         "manual attestation",
     )
-    if manual.get("candidate_sha") != candidate or manual.get("result") != "PASS":
+    if manual["schema"] != "miazcore.world-entry-manual-attestation.v1" or manual["candidate_sha"] != candidate or manual["result"] != "PASS":
         raise SystemExit("manual attestation must PASS for the exact candidate SHA")
+    require_string(manual["host"], manual_path, "host")
+    require_string(manual["notes"], manual_path, "notes")
     if set(manual.get("checks", {})) != MANUAL_CHECKS or set(manual["checks"].values()) != {"PASS"}:
         raise SystemExit("manual attestation must explicitly PASS every required check")
 

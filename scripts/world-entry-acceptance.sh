@@ -36,26 +36,6 @@ run_gate() {
     fi
 }
 
-# Kept for compatibility with diagnostic callers that explicitly require a
-# pseudoterminal.  The acceptance path intentionally launches compositor
-# proofs directly: on this host an intervening `script(1)` process can expose
-# a black ScreenCaptureKit surface even while the client renders correctly.
-run_gui_gate() {
-    local name="$1"; shift
-    local log="$attempt/logs/$name.log"
-    command -v script >/dev/null || {
-        echo "World-entry Acceptance requires script(1) for the macOS GUI gate" >&2
-        exit 64
-    }
-    if script -q "$log" "$@"; then
-        printf 'PASS\n' >"$attempt/$name.result"
-    else
-        printf 'FAIL\n' >"$attempt/$name.result"
-        echo "World-entry Acceptance $name gate failed; retained: $log" >&2
-        exit 1
-    fi
-}
-
 retain_sidecars() {
     local gate="$1"; shift
     local destination="$attempt/sidecars"
