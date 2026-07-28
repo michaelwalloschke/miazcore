@@ -119,6 +119,12 @@ func captureExactWindow() async throws {
         throw CaptureError.exactWindowNotFound
     }
 
+    // A retained proof window can be occluded after its network lifecycle has
+    // settled.  Activate only the exact client process and allow one compositor
+    // turn before asking ScreenCaptureKit for its window surface.
+    NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+    try await Task.sleep(for: .milliseconds(250))
+
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let configuration = SCStreamConfiguration()
     configuration.width = max(1, Int(window.frame.width.rounded(.up)))
