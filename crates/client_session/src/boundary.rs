@@ -334,6 +334,7 @@ impl WorkerBoundary {
             // movement publication and therefore deliberately emits no
             // `MovementSubmitted` event or movement revision.
             current.submitted_pose = Some(pose);
+            current.submitted_pose_is_stopped = false;
             current.realm_observed_pose = Some(pose);
             self.counters
                 .snapshot_revision
@@ -382,6 +383,7 @@ impl WorkerBoundary {
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.submitted_pose = Some(pose);
+            current.submitted_pose_is_stopped = stopped;
             self.counters
                 .snapshot_revision
                 .fetch_add(1, Ordering::AcqRel);
@@ -414,6 +416,7 @@ impl WorkerBoundary {
         current.entry_anchor = None;
         current.predicted_pose = None;
         current.submitted_pose = None;
+        current.submitted_pose_is_stopped = false;
         current.realm_observed_pose = None;
         current.correction_target = None;
         current.movement_proof = None;

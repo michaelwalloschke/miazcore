@@ -476,13 +476,14 @@ fn persisted_proof_timed_out(started_at: Option<Instant>, now: Instant) -> bool 
 }
 
 fn persisted_proof_stop_due(snapshot: &client_session::ClientSnapshot) -> bool {
-    snapshot
-        .entry_anchor
-        .zip(snapshot.submitted_pose)
-        .is_some_and(|(anchor, submitted)| {
-            (submitted.east - anchor.east).hypot(submitted.north - anchor.north)
-                >= PERSISTED_PROOF_STOP_DISTANCE_METRES
-        })
+    snapshot.submitted_pose_is_stopped
+        && snapshot
+            .entry_anchor
+            .zip(snapshot.submitted_pose)
+            .is_some_and(|(anchor, submitted)| {
+                (submitted.east - anchor.east).hypot(submitted.north - anchor.north)
+                    >= PERSISTED_PROOF_STOP_DISTANCE_METRES
+            })
 }
 
 fn proof_sidecar(
@@ -676,6 +677,11 @@ mod tests {
             east: 12.1,
             ..anchor
         });
+        assert!(
+            !persisted_proof_stop_due(&snapshot),
+            "a moving heartbeat above the distance threshold is not proof eligibility"
+        );
+        snapshot.submitted_pose_is_stopped = true;
         assert!(persisted_proof_stop_due(&snapshot));
     }
 

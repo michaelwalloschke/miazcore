@@ -78,6 +78,9 @@ WGPU_BACKEND=metal RUST_LOG=info target/debug/learning_client \
 client_pid=$!
 
 for _ in {1..360}; do
+    # The proof publishes its semantic request boundary first, then the
+    # retained worker advances it to Reconnecting.  A stage file therefore
+    # exists before the fault-injection boundary is safe to trigger.
     [[ -f "$fault_stage" && "$(<"$fault_stage")" == "reconnecting" ]] && break
     kill -0 "$client_pid" 2>/dev/null || { cat "$fault_log" >&2; exit 1; }
     sleep 0.25

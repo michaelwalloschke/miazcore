@@ -636,6 +636,8 @@ pub struct ClientSnapshot {
     pub entry_anchor: Option<WorldPose>,
     pub predicted_pose: Option<WorldPose>,
     pub submitted_pose: Option<WorldPose>,
+    /// Whether the latest submitted movement frame was an explicit stop.
+    pub submitted_pose_is_stopped: bool,
     pub realm_observed_pose: Option<WorldPose>,
     pub correction_target: Option<CorrectionTarget>,
     pub movement_proof: Option<MovementProofEvidence>,
@@ -656,6 +658,7 @@ impl ClientSnapshot {
             entry_anchor: None,
             predicted_pose: None,
             submitted_pose: None,
+            submitted_pose_is_stopped: false,
             realm_observed_pose: None,
             correction_target: None,
             movement_proof: None,
