@@ -61,7 +61,11 @@ final class CompositedFrameOutput: NSObject, SCStreamOutput {
         lock.lock()
         framesObserved += 1
         greatestDetailRange = max(greatestDetailRange, detailRange)
-        let continuation = detailRange >= 24 ? self.continuation : nil
+        // The diagnostic world intentionally uses a near-black palette.  The
+        // external PNG verifier rejects an actually black image; requiring a
+        // large sampled range here additionally rejects valid dark Metal
+        // frames when the sparse cyan geometry falls between sample points.
+        let continuation = detailRange >= 8 ? self.continuation : nil
         if continuation != nil { self.continuation = nil }
         lock.unlock()
         continuation?.resume(returning: image)
@@ -126,15 +130,28 @@ func captureExactWindow() async throws {
     let frameOutput = CompositedFrameOutput()
     let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
     try stream.addStreamOutput(frameOutput, type: .screen, sampleHandlerQueue: .global(qos: .userInitiated))
+    // A stationary window may only emit its initial composited sample. Install
+    // the continuation before starting the stream so that first sample cannot
+    // race past an unarmed listener.
+    let frameTask = Task { try await frameOutput.waitForCompositedFrame() }
+    await Task.yield()
     try await stream.startCapture()
-    defer { Task { try? await stream.stopCapture() } }
+    defer {
+        frameTask.cancel()
+        Task { try? await stream.stopCapture() }
+    }
 
     let image = try await withThrowingTaskGroup(of: CGImage.self) { group in
-        group.addTask { try await frameOutput.waitForCompositedFrame() }
+        group.addTask { try await frameTask.value }
         group.addTask {
-            try await Task.sleep(for: .seconds(8))
+            // ScreenCaptureKit owns its own delivery schedule.  Let the
+            // registered frame continuation report its observed-frame
+            // diagnostics after a generous bounded wait instead of racing it
+            // with a second generic timeout error.
+            try await Task.sleep(for: .seconds(15))
             frameOutput.fail()
-            throw CaptureError.noCompositedSceneFrame("frame deadline exceeded")
+            try await Task.sleep(for: .seconds(3600))
+            throw CancellationError()
         }
         let image = try await group.next()!
         group.cancelAll()
