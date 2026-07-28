@@ -18,10 +18,28 @@ printf '{"phase":"ReconnectUnavailableRejected"}\n' >"$bundle/artifacts/negative
 printf '{"schema":"miazcore.acceptance-commands.v1","commands":{"deterministic":["cargo"],"session":["cargo"],"bevy":["scripts/check.sh"],"metal":["scripts/render-smoke.sh"],"live-character":["scripts/live-character-selection.sh"],"live-proof":["scripts/persisted-movement-smoke.sh"],"live-negatives":["scripts/persisted-movement-negative-probes.sh"],"manual":["manual-attestation"]}}\n' >"$bundle/artifacts/commands.json"
 printf '{"schema":"miazcore.acceptance-results.v1","results":{"deterministic":"PASS","session":"PASS","bevy":"PASS","metal":"PASS","live-character":"PASS","live-proof":"PASS","live-negatives":"PASS","manual":"PASS"}}\n' >"$bundle/artifacts/gate-results.json"
 printf '{"schema":"miazcore.acceptance-versions.v1","versions":{"git":"test","rustc":"test","cargo":"test","python":"test","platform":"test"}}\n' >"$bundle/artifacts/versions.json"
-printf '{"schema":"miazcore.acceptance-execution.v1","candidate_sha":"%s","attempt_id":"test-attempt","gate_result_hashes":{"deterministic":"0000000000000000000000000000000000000000000000000000000000000000","session":"0000000000000000000000000000000000000000000000000000000000000000","bevy":"0000000000000000000000000000000000000000000000000000000000000000","metal":"0000000000000000000000000000000000000000000000000000000000000000","live-character":"0000000000000000000000000000000000000000000000000000000000000000","live-proof":"0000000000000000000000000000000000000000000000000000000000000000","live-negatives":"0000000000000000000000000000000000000000000000000000000000000000","manual":"0000000000000000000000000000000000000000000000000000000000000000"}}\n' "$candidate" >"$bundle/artifacts/execution.json"
+for gate in deterministic session bevy metal live-character live-proof live-negatives; do
+    printf 'PASS\n' >"$bundle/artifacts/$gate.result"
+done
+python3 - "$bundle" "$candidate" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / "artifacts"
+candidate = sys.argv[2]
+gates = ("deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives")
+hashes = {gate: hashlib.sha256((root / f"{gate}.result").read_bytes()).hexdigest() for gate in gates}
+hashes["manual"] = hashlib.sha256((root / "manual-attestation.json").read_bytes()).hexdigest()
+(root / "execution.json").write_text(json.dumps({"schema": "miazcore.acceptance-execution.v1", "candidate_sha": candidate, "attempt_id": "test-attempt", "gate_result_hashes": hashes}) + "\n")
+PY
 
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"
+printf 'FAIL\n' >"$bundle/artifacts/live-proof.result"
+if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
+    echo "acceptance validator accepted a changed retained gate result" >&2
+    exit 1
+fi
+printf 'PASS\n' >"$bundle/artifacts/live-proof.result"
+python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 printf 'tampered\n' >>"$bundle/artifacts/metal.json"
 if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
     echo "acceptance validator accepted a tampered artifact" >&2

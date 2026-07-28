@@ -13,13 +13,14 @@ SENSITIVE = re.compile(
     r"password|credential|session[_ -]?(?:key|material|token)|secret|cipher|raw packet|auth(?:entication)?[_ -]?proof",
     re.I,
 )
-GATES = (
-    "deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives", "manual",
+MACHINE_GATES = (
+    "deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives",
 )
+GATES = (*MACHINE_GATES, "manual")
 REQUIRED = {
     "commands.json", "execution.json", "gate-results.json", "manual-attestation.json", "metal.json", "metal.png",
     "negative-reconnect.json", "negative-short.json", "persisted-movement.json", "versions.json",
-}
+} | {f"{gate}.result" for gate in MACHINE_GATES}
 DEFERRALS = [
     "gameplay, content, multiplayer, LAN exposure, broader packet or movement coverage",
     "authored-content polish, general polish, unmeasured optimization, and public distribution work",
@@ -126,8 +127,7 @@ def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation
     marker = attempt / "candidate_sha"
     if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != candidate:
         raise SystemExit("attempt candidate does not match the accepted candidate")
-    machine_gates = GATES[:-1]
-    result_paths = {gate: attempt / f"{gate}.result" for gate in machine_gates}
+    result_paths = {gate: attempt / f"{gate}.result" for gate in MACHINE_GATES}
     if any(not path.is_file() or path.read_text(encoding="utf-8") != "PASS\n" for path in result_paths.values()):
         raise SystemExit("attempt does not contain one PASS result for every machine gate")
     return {
@@ -185,6 +185,14 @@ def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
     hashes = execution.get("gate_result_hashes", {})
     if set(hashes) != set(GATES) or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
         raise SystemExit("curated execution provenance must bind every gate result")
+    for gate in MACHINE_GATES:
+        result_path = artifacts / f"{gate}.result"
+        if result_path.read_text(encoding="utf-8") != "PASS\n":
+            raise SystemExit(f"curated {gate} result must explicitly PASS")
+        if hashes[gate] != sha256(result_path):
+            raise SystemExit(f"curated execution provenance does not bind {gate} result")
+    if hashes["manual"] != sha256(manual_path):
+        raise SystemExit("curated execution provenance does not bind manual attestation")
 
     validate_sidecars(artifacts)
 
@@ -212,6 +220,8 @@ def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path,
             raise SystemExit(f"missing curated source artifact: {source}")
         shutil.copyfile(source, artifacts / name)
     execution = recorded_execution(attempt, candidate, manual_attestation)
+    for gate in MACHINE_GATES:
+        shutil.copyfile(attempt / f"{gate}.result", artifacts / f"{gate}.result")
     (artifacts / "execution.json").write_text(json.dumps(execution, indent=2) + "\n")
     commands = {
         "deterministic": ["cargo", "test", "--locked", "-p", "client_protocol", "--tests"],
