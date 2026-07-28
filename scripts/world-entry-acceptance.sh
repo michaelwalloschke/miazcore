@@ -81,8 +81,11 @@ run_gate live-character scripts/live-character-selection.sh
 # child of the permission-bearing desktop process.
 run_gate live-proof scripts/persisted-movement-smoke.sh
 retain_sidecars live-proof artifacts/persisted-movement-smoke.json
+mv "$attempt/sidecars/persisted-movement-smoke.json" "$attempt/sidecars/persisted-movement.json"
 run_gate live-negatives scripts/persisted-movement-negative-probes.sh
 retain_sidecars live-negatives artifacts/persisted-movement-short-negative.json artifacts/persisted-movement-reconnect-unavailable.json
+mv "$attempt/sidecars/persisted-movement-short-negative.json" "$attempt/sidecars/negative-short.json"
+mv "$attempt/sidecars/persisted-movement-reconnect-unavailable.json" "$attempt/sidecars/negative-reconnect.json"
 
 python3 scripts/validate-acceptance-evidence.py curate "$bundle" "$candidate_sha" "$manual_attestation" "$attempt"
 python3 scripts/validate-acceptance-evidence.py validate "$bundle"
