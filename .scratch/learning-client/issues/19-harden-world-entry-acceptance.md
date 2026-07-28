@@ -36,9 +36,17 @@ Add no new product behavior. Close only the coverage, reliability, and evidence 
 
 ## Exit evidence
 
-Accepted candidate: `f263b33257b7a57ba1691746dffb20cb21625aa8`.
-Validated curated bundle: `artifacts/world-entry-acceptance/20260727T201304Z-f263b33257b7`.
-All deterministic, session, Bevy/platform, Metal, live-character, persisted-movement, negative-probe, and manual gates passed. Windows runtime remains explicitly deferred.
+Accepted candidate: `15d5839f9f80acaa2c1da97efe1efbe50270ece3`.
+Validated curated bundle: `artifacts/world-entry-acceptance/20260728T135651Z-15d5839f9f80`.
+All deterministic, session, Bevy/platform, Metal, live-character, persisted-movement, negative-probe, and manual gates passed once on the accepted candidate. The bundle retains and hash-binds every machine PASS marker, its canonical semantic sidecars, and the SHA-bound manual attestation to the recorded attempt. Artifact contents are regular-file-only, semantically complete, type-checked, and reject raw or encoded session material. Windows runtime remains explicitly deferred.
+
+## Answer
+
+Resolved by `15d5839` (`Harden acceptance evidence validation`) and this evidence-only closeout.
+
+- The accepted candidate completed all eight recorded gates once: deterministic, session, Bevy/platform, Metal, live-character, persisted movement, live negative probes, and the SHA-bound manual attestation.
+- [Validated acceptance bundle](../../../artifacts/world-entry-acceptance/20260728T135651Z-15d5839f9f80/REPORT.md) contains the hash-bound PASS markers and canonical semantic sidecars; its manifest validates independently with `scripts/validate-acceptance-evidence.py`.
+- The final review found no remaining specification gaps or standards blockers. The only non-blocking observation was narrow, readable duplication between the success and negative sidecar validators.
 
 ## Explicit deferrals
 
