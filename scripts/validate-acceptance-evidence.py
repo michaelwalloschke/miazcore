@@ -21,6 +21,11 @@ REQUIRED = {
     "commands.json", "execution.json", "gate-results.json", "manual-attestation.json", "metal.json", "metal.png",
     "negative-reconnect.json", "negative-short.json", "persisted-movement.json", "versions.json",
 } | {f"{gate}.result" for gate in MACHINE_GATES}
+EVIDENCE_BY_GATE = {
+    "metal": ("metal.png", "metal.json"),
+    "live-proof": ("persisted-movement.json",),
+    "live-negatives": ("negative-short.json", "negative-reconnect.json"),
+}
 DEFERRALS = [
     "gameplay, content, multiplayer, LAN exposure, broader packet or movement coverage",
     "authored-content polish, general polish, unmeasured optimization, and public distribution work",
@@ -130,6 +135,13 @@ def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation
     result_paths = {gate: attempt / f"{gate}.result" for gate in MACHINE_GATES}
     if any(not path.is_file() or path.read_text(encoding="utf-8") != "PASS\n" for path in result_paths.values()):
         raise SystemExit("attempt does not contain one PASS result for every machine gate")
+    evidence_hashes = {}
+    for gate, names in EVIDENCE_BY_GATE.items():
+        for name in names:
+            path = attempt / "sidecars" / name
+            if not path.is_file():
+                raise SystemExit(f"attempt is missing retained {gate} evidence: {name}")
+            evidence_hashes[name] = sha256(path)
     return {
         "schema": "miazcore.acceptance-execution.v1",
         "candidate_sha": candidate,
@@ -138,6 +150,7 @@ def recorded_execution(attempt: pathlib.Path, candidate: str, manual_attestation
             **{gate: sha256(path) for gate, path in result_paths.items()},
             "manual": sha256(manual_attestation),
         },
+        "gate_evidence_hashes": evidence_hashes,
     }
 
 
@@ -179,7 +192,7 @@ def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
 
     execution_path = artifacts / "execution.json"
     execution = read_json(execution_path)
-    allow_keys(execution, {"schema", "candidate_sha", "attempt_id", "gate_result_hashes"}, execution_path, "execution")
+    allow_keys(execution, {"schema", "candidate_sha", "attempt_id", "gate_result_hashes", "gate_evidence_hashes"}, execution_path, "execution")
     if execution.get("schema") != "miazcore.acceptance-execution.v1" or execution.get("candidate_sha") != candidate or not re.fullmatch(r"[0-9A-Za-z._-]+", execution.get("attempt_id", "")):
         raise SystemExit("curated execution provenance is malformed")
     hashes = execution.get("gate_result_hashes", {})
@@ -193,6 +206,13 @@ def validate_bundle_content(artifacts: pathlib.Path, candidate: str) -> None:
             raise SystemExit(f"curated execution provenance does not bind {gate} result")
     if hashes["manual"] != sha256(manual_path):
         raise SystemExit("curated execution provenance does not bind manual attestation")
+    evidence_hashes = execution.get("gate_evidence_hashes", {})
+    expected_evidence = {name for names in EVIDENCE_BY_GATE.values() for name in names}
+    if set(evidence_hashes) != expected_evidence or not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in evidence_hashes.values()):
+        raise SystemExit("curated execution provenance must bind every semantic evidence artifact")
+    for name in expected_evidence:
+        if evidence_hashes[name] != sha256(artifacts / name):
+            raise SystemExit(f"curated execution provenance does not bind {name}")
 
     validate_sidecars(artifacts)
 
@@ -209,11 +229,11 @@ def curate(root: pathlib.Path, candidate: str, manual_attestation: pathlib.Path,
     artifacts.mkdir(parents=True, exist_ok=False)
     sources = {
         "manual-attestation.json": manual_attestation,
-        "metal.png": pathlib.Path("artifacts/render-smoke/offline-diagnostic-world.png"),
-        "metal.json": pathlib.Path("artifacts/render-smoke/offline-diagnostic-world.json"),
-        "persisted-movement.json": pathlib.Path("artifacts/persisted-movement-smoke.json"),
-        "negative-short.json": pathlib.Path("artifacts/persisted-movement-short-negative.json"),
-        "negative-reconnect.json": pathlib.Path("artifacts/persisted-movement-reconnect-unavailable.json"),
+        "metal.png": attempt / "sidecars" / "metal.png",
+        "metal.json": attempt / "sidecars" / "metal.json",
+        "persisted-movement.json": attempt / "sidecars" / "persisted-movement.json",
+        "negative-short.json": attempt / "sidecars" / "negative-short.json",
+        "negative-reconnect.json": attempt / "sidecars" / "negative-reconnect.json",
     }
     for name, source in sources.items():
         if not source.is_file():

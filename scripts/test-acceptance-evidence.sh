@@ -28,7 +28,9 @@ candidate = sys.argv[2]
 gates = ("deterministic", "session", "bevy", "metal", "live-character", "live-proof", "live-negatives")
 hashes = {gate: hashlib.sha256((root / f"{gate}.result").read_bytes()).hexdigest() for gate in gates}
 hashes["manual"] = hashlib.sha256((root / "manual-attestation.json").read_bytes()).hexdigest()
-(root / "execution.json").write_text(json.dumps({"schema": "miazcore.acceptance-execution.v1", "candidate_sha": candidate, "attempt_id": "test-attempt", "gate_result_hashes": hashes}) + "\n")
+evidence = ("metal.png", "metal.json", "persisted-movement.json", "negative-short.json", "negative-reconnect.json")
+evidence_hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in evidence}
+(root / "execution.json").write_text(json.dumps({"schema": "miazcore.acceptance-execution.v1", "candidate_sha": candidate, "attempt_id": "test-attempt", "gate_result_hashes": hashes, "gate_evidence_hashes": evidence_hashes}) + "\n")
 PY
 
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
@@ -51,6 +53,13 @@ if python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$ca
     exit 1
 fi
 printf '{"phase":"Offline"}\n' >"$bundle/artifacts/metal.json"
+python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
+printf 'stale sidecar\n' >"$bundle/artifacts/negative-short.json"
+if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then
+    echo "acceptance validator accepted stale semantic evidence" >&2
+    exit 1
+fi
+printf '{"phase":"PersistedMovementRejected"}\n' >"$bundle/artifacts/negative-short.json"
 python3 "$root/scripts/validate-acceptance-evidence.py" create "$bundle" "$candidate"
 rm "$bundle/artifacts/metal.png"
 if python3 "$root/scripts/validate-acceptance-evidence.py" validate "$bundle"; then

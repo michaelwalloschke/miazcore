@@ -55,13 +55,29 @@ run_gui_gate() {
     fi
 }
 
+retain_sidecars() {
+    local gate="$1"; shift
+    local destination="$attempt/sidecars"
+    mkdir -p "$destination"
+    for source in "$@"; do
+        [[ -f "$source" ]] || {
+            echo "World-entry Acceptance $gate gate did not retain required semantic evidence: $source" >&2
+            exit 1
+        }
+        cp "$source" "$destination/$(basename "$source")"
+    done
+}
+
 run_gate deterministic cargo test --locked -p client_protocol --tests
 run_gate session cargo test --locked -p client_session
 run_gate bevy scripts/check.sh
 run_gui_gate metal scripts/render-smoke.sh
+retain_sidecars metal artifacts/render-smoke/offline-diagnostic-world.png artifacts/render-smoke/offline-diagnostic-world.json
 run_gate live-character scripts/live-character-selection.sh
 run_gui_gate live-proof scripts/persisted-movement-smoke.sh
+retain_sidecars live-proof artifacts/persisted-movement-smoke.json
 run_gui_gate live-negatives scripts/persisted-movement-negative-probes.sh
+retain_sidecars live-negatives artifacts/persisted-movement-short-negative.json artifacts/persisted-movement-reconnect-unavailable.json
 
 python3 scripts/validate-acceptance-evidence.py curate "$bundle" "$candidate_sha" "$manual_attestation" "$attempt"
 python3 scripts/validate-acceptance-evidence.py validate "$bundle"
