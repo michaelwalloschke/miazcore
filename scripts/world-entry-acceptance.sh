@@ -36,9 +36,10 @@ run_gate() {
     fi
 }
 
-# macOS presents a Bevy/Metal window differently when the process has no
-# terminal. `script` keeps a pseudoterminal for the actual GUI gate while also
-# retaining its transcript as the canonical attempt log.
+# Kept for compatibility with diagnostic callers that explicitly require a
+# pseudoterminal.  The acceptance path intentionally launches compositor
+# proofs directly: on this host an intervening `script(1)` process can expose
+# a black ScreenCaptureKit surface even while the client renders correctly.
 run_gui_gate() {
     local name="$1"; shift
     local log="$attempt/logs/$name.log"
@@ -71,13 +72,11 @@ retain_sidecars() {
 run_gate deterministic cargo test --locked -p client_protocol --tests
 run_gate session cargo test --locked -p client_session
 run_gate bevy scripts/check.sh
-run_gui_gate metal scripts/render-smoke.sh
+run_gate metal scripts/render-smoke.sh
 retain_sidecars metal artifacts/render-smoke/offline-diagnostic-world.png artifacts/render-smoke/offline-diagnostic-world.json
 run_gate live-character scripts/live-character-selection.sh
-# ScreenCaptureKit captures the live proof only when the client remains a
-# direct child of the permission-bearing desktop process.  `script(1)` is
-# required for the standalone Metal gate, but its PTY intermediary yields no
-# live-window frames on this macOS host.
+# ScreenCaptureKit captures these proofs only when the client remains a direct
+# child of the permission-bearing desktop process.
 run_gate live-proof scripts/persisted-movement-smoke.sh
 retain_sidecars live-proof artifacts/persisted-movement-smoke.json
 run_gate live-negatives scripts/persisted-movement-negative-probes.sh
