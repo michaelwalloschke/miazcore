@@ -2,7 +2,7 @@
 
 Type: wayfinder:grilling
 Status: open
-Blocked by: [Research the private-use and provenance boundary](01-research-private-use-and-provenance-boundary.md), [Research the build-12340 native archive layout](02-research-build-12340-native-archive-layout.md), [Evaluate asset-reader toolchains](03-evaluate-asset-reader-toolchains.md)
+Blocked by: [Research the private-use and provenance boundary](01-research-private-use-and-provenance-boundary.md), [Research the build-12340 native archive layout](02-research-build-12340-native-archive-layout.md), [Evaluate asset-reader toolchains](03-evaluate-asset-reader-toolchains.md), [Establish asset-use authorization](08-establish-asset-use-authorization.md)
 
 ## Question
 

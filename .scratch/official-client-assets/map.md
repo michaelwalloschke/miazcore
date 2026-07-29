@@ -25,10 +25,12 @@ product, architecture, or compliance questions.
 - The source is a legally obtained native 3.3.5a/build-12340 data installation
   that may be copied from another supported platform. The macOS Learning Client
   does not launch or depend on Blizzard's executable.
-- Asset access is private learning use only: raw data and every derived cache
-  remain user-local, untracked, non-exported, and regenerable. Public
-  distribution, repackaging, or publishing of raw or derived Blizzard content
-  is outside this map.
+- Asset access must be permission-gated. Private learning use, user-local data,
+  untracked regenerable cache, and non-export are required exposure controls,
+  but not an assumed grant to import or transform Blizzard content. No importer,
+  cache, or rendered Blizzard content may run until **Establish asset-use
+  authorization** is resolved. Public distribution, repackaging, or publishing
+  of raw or derived Blizzard content is outside this map.
 - The importer reads only the native archive layout. Pre-extracted or
   repackaged asset folders are unsupported in this effort.
 - The first presentation target is one Entry-Anchor-aligned terrain patch in
@@ -41,12 +43,16 @@ product, architecture, or compliance questions.
 
 <!-- Resolved child tickets are linked here, one gist per ticket. -->
 
-- [Research the build-12340 native archive layout](issues/02-research-build-12340-native-archive-layout.md) — Use the Chromie build-12340/enUS folder as the technically clean development fixture; validate an explicit standard MPQ stack, reject Thera's custom overlays, and leave provenance approval to its dedicated research ticket.
+- [Research the build-12340 native archive layout](issues/02-research-build-12340-native-archive-layout.md) — Use the Standard Fixture's exact 13-archive build-12340/enUS SHA-256 manifest and fixed low-to-high precedence; reject custom overlays via the Overlay Fixture's `unsupported-custom-patch-set` case, while leaving provenance approval to its dedicated research ticket.
+- [Research the private-use and provenance boundary](issues/01-research-private-use-and-provenance-boundary.md) — Public Blizzard terms do not affirmatively authorize an independent importer/cache, and neither local folder proves a usable license; private controls mitigate exposure but **Establish asset-use authorization** gates any asset-handling implementation.
 
 ## Not yet specified
 
-- The exact required archive order and the smallest asset-specific subset remain
-  open until the reader-toolchain and terrain-addressing research is complete.
+- The smallest asset-specific subset beyond the fixed source-validation manifest
+  remains open until the reader-toolchain and terrain-addressing research is
+  complete.
+- The exact permitted activity and cache scope can be specified only if the
+  authorization task returns an affirmative, sufficiently specific result.
 - The terrain patch's exact visual composition, collision treatment, and how it
   coexists with project-owned Diagnostic World markers depend on the importer
   and coordinate-contract conclusions.

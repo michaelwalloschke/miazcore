@@ -15,14 +15,16 @@ platform, and what must fail closed?
 The candidate assessment is recorded in
 [Build-12340 source-layout assessment](../research/02-build-12340-source-layout.md).
 
-Use `~/Downloads/ChromieWowClient` as the technically usable build-12340/enUS
+Use the **Standard Fixture** as the technically usable build-12340/enUS
 development fixture: its normal archive stack is byte-identical on the checked
-archives to the standard portion of the Thera copy and carries no extra
-top-level custom patch archives. The importer must validate an explicit native
-archive allowlist and order, treat the Windows executable as build evidence only,
-ignore runtime/configuration files, and fail closed on unexpected overlays.
+archives to the standard portion of the **Overlay Fixture** and carries no extra
+top-level custom patch archives. The linked assessment now defines the required
+thirteen-archive low-to-high precedence manifest, exact byte sizes and SHA-256
+identifiers, MPQ header/table-index checks, optional build evidence, and the
+full fail-closed rules. The importer treats the Windows executable as build
+evidence only and ignores runtime/configuration files.
 
-`~/Downloads/TheraWowClient` is not a first-choice source because its six extra
+The **Overlay Fixture** is not a first-choice source because its six extra
 uppercase patch archives can override content; retain it only as a negative
-fixture that proves the validator rejects custom overlay sets. This is technical
-format evidence only, not proof of legal provenance.
+fixture that proves the validator returns `unsupported-custom-patch-set`. This
+is technical format evidence only, not proof of legal provenance.
