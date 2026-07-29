@@ -15,7 +15,11 @@ pub const SMSG_LOGOUT_COMPLETE: u16 = 0x004d;
 pub const MSG_MOVE_START_FORWARD: u32 = 0x00b5;
 pub const MSG_MOVE_STOP: u32 = 0x00b7;
 pub const MSG_MOVE_HEARTBEAT: u32 = 0x00ee;
+const MSG_MOVE_START_FORWARD_SERVER: u16 = 0x00b5;
+const MSG_MOVE_STOP_SERVER: u16 = 0x00b7;
+const MSG_MOVE_HEARTBEAT_SERVER: u16 = 0x00ee;
 pub const SMSG_UPDATE_OBJECT: u16 = 0x00a9;
+pub const SMSG_DESTROY_OBJECT: u16 = 0x00aa;
 pub const SMSG_FORCE_RUN_SPEED_CHANGE: u16 = 0x00e2;
 pub const CMSG_FORCE_RUN_SPEED_CHANGE_ACK: u32 = 0x00e3;
 pub const SMSG_FORCE_MOVE_ROOT: u16 = 0x00e8;
@@ -356,6 +360,24 @@ impl AcoreMovementInfo {
         }
         Ok(self)
     }
+
+    fn is_ordinary_ground(self) -> bool {
+        self.flags
+            & (MOVEMENT_FLAG_ON_TRANSPORT
+                | MOVEMENT_FLAG_FALLING
+                | MOVEMENT_FLAG_SWIMMING
+                | MOVEMENT_FLAG_FLYING
+                | MOVEMENT_FLAG_SPLINE_ELEVATION
+                | MOVEMENT_FLAG_SPLINE_ENABLED)
+            == 0
+            && self.flags2
+                & (MOVEMENT_FLAG2_ALWAYS_ALLOW_PITCHING | MOVEMENT_FLAG2_INTERPOLATED_MOVEMENT)
+                == 0
+            && self.transport.is_none()
+            && self.pitch.is_none()
+            && self.jump.is_none()
+            && self.spline_elevation.is_none()
+    }
 }
 
 /// Encode one complete client movement body: active mover packed GUID followed
@@ -397,6 +419,44 @@ pub struct AuthoritativeSelfState {
     guid: u64,
     movement: AcoreMovementInfo,
     speeds: BootstrapSpeeds,
+}
+
+/// A non-owning, semantic record extracted for the reset-scoped remote-player
+/// research tracer.
+///
+/// This type deliberately has no object-field or display metadata. Callers
+/// must first establish encrypted frame integrity, then decide which player
+/// GUIDs to retain. It is not a general object registry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RemoteWorldTraceEvent {
+    /// A non-self player create carrying an initial movement snapshot.
+    PlayerCreate {
+        guid: u64,
+        movement: AcoreMovementInfo,
+    },
+    /// A GUID-prefixed movement message. Its object type is intentionally not
+    /// inferred; the caller must accept it only for a prior player create.
+    Movement {
+        guid: u64,
+        movement: AcoreMovementInfo,
+        opcode: u16,
+    },
+    /// A GUID in a complete out-of-range list.
+    OutOfRange { guid: u64 },
+    /// A GUID in a complete object-destruction packet.
+    Destroy { guid: u64 },
+}
+
+impl RemoteWorldTraceEvent {
+    #[must_use]
+    pub const fn guid(self) -> u64 {
+        match self {
+            Self::PlayerCreate { guid, .. }
+            | Self::Movement { guid, .. }
+            | Self::OutOfRange { guid }
+            | Self::Destroy { guid } => guid,
+        }
+    }
 }
 
 impl AuthoritativeSelfState {
@@ -520,6 +580,53 @@ pub fn decode_authoritative_self_update(
         _ => return Err(malformed_world_entry(opcode, 0)),
     };
     parse_update_body(body, selected_guid, opcode)
+}
+
+/// Extract only the build-12340 records needed by the reset-scoped
+/// remote-player semantic tracer.
+///
+/// The caller supplies complete plaintext World frames from the directional
+/// frame decoder. Unknown opcodes yield no events; update containers are still
+/// consumed completely so unrelated objects cannot disturb subsequent blocks.
+///
+/// # Errors
+///
+/// Returns an error when a supported record is malformed, compressed beyond
+/// its bounded declaration, or cannot be structurally consumed.
+pub fn decode_remote_world_trace(
+    opcode: u16,
+    payload: &[u8],
+) -> Result<Vec<RemoteWorldTraceEvent>, ProtocolError> {
+    match opcode {
+        SMSG_UPDATE_OBJECT => parse_remote_update_body(payload, opcode),
+        SMSG_COMPRESSED_UPDATE_OBJECT => {
+            let body = decompress_update(payload)?;
+            parse_remote_update_body(&body, opcode)
+        }
+        MSG_MOVE_START_FORWARD_SERVER | MSG_MOVE_HEARTBEAT_SERVER | MSG_MOVE_STOP_SERVER => {
+            let mut cursor = Cursor::new(payload, opcode);
+            let guid = cursor.packed_guid()?;
+            let movement = AcoreMovementInfo::decode(&mut cursor)?;
+            cursor.finish()?;
+            if movement.is_ordinary_ground() {
+                Ok(vec![RemoteWorldTraceEvent::Movement {
+                    guid,
+                    movement,
+                    opcode,
+                }])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        SMSG_DESTROY_OBJECT => {
+            let mut cursor = Cursor::new(payload, opcode);
+            let guid = cursor.u64()?;
+            let _death = cursor.u8()?;
+            cursor.finish()?;
+            Ok(vec![RemoteWorldTraceEvent::Destroy { guid }])
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// Decode `AzerothCore`'s build-12340 run-speed control message.
@@ -736,7 +843,8 @@ fn parse_update_body(
     let mut found = None;
 
     for _ in 0..block_count {
-        match cursor.u8()? {
+        let update_type = cursor.u8()?;
+        match update_type {
             UPDATE_TYPE_VALUES => {
                 let _ = cursor.packed_guid()?;
                 consume_update_mask(&mut cursor)?;
@@ -791,6 +899,83 @@ fn parse_update_body(
     }
     cursor.finish()?;
     Ok(found)
+}
+
+fn parse_remote_update_body(
+    body: &[u8],
+    opcode: u16,
+) -> Result<Vec<RemoteWorldTraceEvent>, ProtocolError> {
+    if body.len() > MAX_UPDATE_BODY_SIZE {
+        return Err(malformed_world_entry(opcode, 0));
+    }
+    let mut cursor = Cursor::new(body, opcode);
+    let block_count = cursor.u32()?;
+    if block_count > MAX_UPDATE_BLOCKS {
+        return Err(cursor.malformed());
+    }
+    let mut events = Vec::new();
+    for _ in 0..block_count {
+        let update_type = cursor.u8()?;
+        match update_type {
+            UPDATE_TYPE_VALUES => {
+                let _ = cursor.packed_guid()?;
+                consume_update_mask(&mut cursor)?;
+            }
+            UPDATE_TYPE_MOVEMENT => {
+                let guid = cursor.packed_guid()?;
+                let movement = parse_movement_block(&mut cursor)?;
+                if let Some(movement) = movement.movement
+                    && movement.is_ordinary_ground()
+                {
+                    events.push(RemoteWorldTraceEvent::Movement {
+                        guid,
+                        movement,
+                        opcode: SMSG_UPDATE_OBJECT,
+                    });
+                }
+            }
+            UPDATE_TYPE_CREATE_OBJECT | UPDATE_TYPE_CREATE_OBJECT2 => {
+                let guid = cursor.packed_guid()?;
+                let object_type = cursor.u8()?;
+                let movement = parse_movement_block(&mut cursor)?;
+                consume_update_mask(&mut cursor)?;
+                if update_type == UPDATE_TYPE_CREATE_OBJECT2
+                    && object_type == OBJECT_TYPE_PLAYER
+                    && movement.update_flags & UPDATE_FLAG_SELF == 0
+                    && movement.update_flags
+                        & (UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION)
+                        == UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION
+                    && let Some(movement) = movement.movement
+                    && movement.is_ordinary_ground()
+                {
+                    events.push(RemoteWorldTraceEvent::PlayerCreate { guid, movement });
+                }
+            }
+            UPDATE_TYPE_OUT_OF_RANGE => {
+                let count = cursor.u32()?;
+                if count > MAX_GUID_LIST {
+                    return Err(cursor.malformed());
+                }
+                for _ in 0..count {
+                    events.push(RemoteWorldTraceEvent::OutOfRange {
+                        guid: cursor.packed_guid()?,
+                    });
+                }
+            }
+            UPDATE_TYPE_NEAR => {
+                let count = cursor.u32()?;
+                if count > MAX_GUID_LIST {
+                    return Err(cursor.malformed());
+                }
+                for _ in 0..count {
+                    let _ = cursor.packed_guid()?;
+                }
+            }
+            _ => return Err(cursor.malformed()),
+        }
+    }
+    cursor.finish()?;
+    Ok(events)
 }
 
 struct MovementBlock {
@@ -981,6 +1166,12 @@ impl<'a> Cursor<'a> {
         ))
     }
 
+    fn u64(&mut self) -> Result<u64, ProtocolError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().map_err(|_| self.malformed())?,
+        ))
+    }
+
     fn finite_f32(&mut self) -> Result<f32, ProtocolError> {
         let value = f32::from_le_bytes(self.take(4)?.try_into().map_err(|_| self.malformed())?);
         value
@@ -1015,8 +1206,11 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::{
         AcoreJumpInfo, AcoreMovementInfo, Cursor, ForceMoveRoot, MOVEMENT_FLAG_FALLING,
-        MOVEMENT_FLAG_ROOT, SMSG_UPDATE_OBJECT, decode_force_move_root, encode_client_movement,
-        encode_force_move_root_ack,
+        MOVEMENT_FLAG_ROOT, MSG_MOVE_HEARTBEAT_SERVER, OBJECT_TYPE_PLAYER, RemoteWorldTraceEvent,
+        SMSG_DESTROY_OBJECT, SMSG_UPDATE_OBJECT, UPDATE_FLAG_LIVING,
+        UPDATE_FLAG_STATIONARY_POSITION, UPDATE_TYPE_CREATE_OBJECT, decode_force_move_root,
+        decode_remote_world_trace, encode_client_movement, encode_force_move_root_ack,
+        push_packed_guid,
     };
 
     #[test]
@@ -1085,5 +1279,51 @@ mod tests {
         assert_eq!(&ack[20..24], &2.0_f32.to_le_bytes());
         assert_eq!(&ack[24..28], &3.0_f32.to_le_bytes());
         assert_eq!(&ack[28..32], &0.5_f32.to_le_bytes());
+    }
+
+    #[test]
+    fn remote_trace_emits_only_semantic_player_lifecycle_records() {
+        let guid = 0x0100_0000_0000_0002;
+        let movement = AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, true);
+        let mut create = 1_u32.to_le_bytes().to_vec();
+        create.push(3); // CreateObject2
+        push_packed_guid(&mut create, guid);
+        create.push(OBJECT_TYPE_PLAYER);
+        create.extend_from_slice(
+            &(UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION).to_le_bytes(),
+        );
+        create.extend_from_slice(&movement.encode().unwrap());
+        create.extend((0..9).flat_map(|_| 1.0_f32.to_le_bytes()));
+        create.push(0); // no values-mask words
+
+        assert_eq!(
+            decode_remote_world_trace(SMSG_UPDATE_OBJECT, &create).unwrap(),
+            vec![RemoteWorldTraceEvent::PlayerCreate { guid, movement }]
+        );
+        create[4] = UPDATE_TYPE_CREATE_OBJECT;
+        assert!(
+            decode_remote_world_trace(SMSG_UPDATE_OBJECT, &create)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut heartbeat = Vec::new();
+        push_packed_guid(&mut heartbeat, guid);
+        heartbeat.extend_from_slice(&movement.encode().unwrap());
+        assert_eq!(
+            decode_remote_world_trace(MSG_MOVE_HEARTBEAT_SERVER, &heartbeat).unwrap(),
+            vec![RemoteWorldTraceEvent::Movement {
+                guid,
+                movement,
+                opcode: MSG_MOVE_HEARTBEAT_SERVER,
+            }]
+        );
+
+        let mut destroy = guid.to_le_bytes().to_vec();
+        destroy.push(0);
+        assert_eq!(
+            decode_remote_world_trace(SMSG_DESTROY_OBJECT, &destroy).unwrap(),
+            vec![RemoteWorldTraceEvent::Destroy { guid }]
+        );
     }
 }

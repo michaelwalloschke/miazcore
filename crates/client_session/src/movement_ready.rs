@@ -125,6 +125,27 @@ impl LiveDiagnosticSession {
         .map(Self)
     }
 
+    /// Start a retained diagnostic session that writes a bounded, semantic
+    /// remote-player transcript after it is explicitly disconnected.
+    ///
+    /// This research-only adapter receives only complete decrypted World
+    /// frames and never writes packet payloads, credentials, or session keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initial boundary publication or worker creation fails.
+    pub fn start_with_remote_trace(
+        loaded: LoadedClientConfig,
+        remote_trace_output: PathBuf,
+    ) -> Result<Self, BoundaryError> {
+        HeadlessSession::start_with_remote_trace(
+            loaded,
+            WorkerTarget::LiveDiagnostic,
+            remote_trace_output,
+        )
+        .map(Self)
+    }
+
     /// Send a lossless semantic control command to the worker.
     ///
     /// The live Diagnostic World accepts `StartEntry`, `Disconnect`, and

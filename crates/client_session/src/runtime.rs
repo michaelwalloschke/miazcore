@@ -1,6 +1,9 @@
 use std::{
+    fmt::Write as _,
+    fs,
     io::{self, Read, Write},
     net::{Shutdown, TcpStream},
+    path::PathBuf,
     sync::mpsc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -10,19 +13,20 @@ use client_protocol::{
     AcoreMovementInfo, CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK, CMSG_FORCE_RUN_SPEED_CHANGE_ACK,
     CMSG_LOGOUT_REQUEST, CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP,
     IncrementalWorldServerDecoder, LoginChallengeResponse, LoginProofResponse, MSG_MOVE_HEARTBEAT,
-    MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, ProtocolError, REALM_LIST_REQUEST, SMSG_AUTH_RESPONSE,
-    SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_MOVE_ROOT,
-    SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD, SMSG_LOGOUT_COMPLETE,
-    SMSG_LOGOUT_RESPONSE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
-    WorldAuthResponse, WorldClientStream, WorldEntryLocation, WorldServerStream,
-    calculate_srp_client_proof, decode_authoritative_self_update, decode_character_enumeration,
-    decode_force_move_root, decode_force_run_speed_change, decode_login_verify_world,
-    decode_time_sync_request, decode_unset_can_fly, decode_unsupported_self_control_guid,
-    decode_world_auth_challenge, decode_world_auth_response, encode_client_movement,
-    encode_force_move_root_ack, encode_force_run_speed_change_ack, encode_logon_challenge,
-    encode_logon_proof, encode_move_set_can_fly_ack, encode_player_login,
-    encode_time_sync_response, encode_world_auth_session_frame, read_logon_challenge_response,
-    read_logon_proof_response, read_plain_world_server_frame, read_realm_list_response,
+    MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, ProtocolError, REALM_LIST_REQUEST,
+    RemoteWorldTraceEvent, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
+    SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD,
+    SMSG_LOGOUT_COMPLETE, SMSG_LOGOUT_RESPONSE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ,
+    SMSG_UPDATE_OBJECT, WorldAuthResponse, WorldClientStream, WorldEntryLocation,
+    WorldServerStream, calculate_srp_client_proof, decode_authoritative_self_update,
+    decode_character_enumeration, decode_force_move_root, decode_force_run_speed_change,
+    decode_login_verify_world, decode_remote_world_trace, decode_time_sync_request,
+    decode_unset_can_fly, decode_unsupported_self_control_guid, decode_world_auth_challenge,
+    decode_world_auth_response, encode_client_movement, encode_force_move_root_ack,
+    encode_force_run_speed_change_ack, encode_logon_challenge, encode_logon_proof,
+    encode_move_set_can_fly_ack, encode_player_login, encode_time_sync_response,
+    encode_world_auth_session_frame, read_logon_challenge_response, read_logon_proof_response,
+    read_plain_world_server_frame, read_realm_list_response,
 };
 use zeroize::Zeroizing;
 
@@ -132,17 +136,165 @@ enum EntryMode {
     Reconnect,
 }
 
+const REMOTE_TRANSCRIPT_MAX_EVENTS: usize = 16;
+
+/// Bounded, file-backed-at-completion evidence for the local remote-player
+/// research probe. It never owns an encrypted header, plaintext payload, name,
+/// credential, or session key.
+struct RemoteTranscript {
+    output: PathBuf,
+    remote_guid: Option<u64>,
+    events: Vec<RemoteTranscriptEvent>,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteTranscriptEvent {
+    kind: &'static str,
+    guid: u64,
+    opcode: Option<u16>,
+    pose: Option<WorldPose>,
+}
+
+impl RemoteTranscript {
+    fn new(output: PathBuf) -> Self {
+        Self {
+            output,
+            remote_guid: None,
+            events: Vec::new(),
+        }
+    }
+
+    fn observe(&mut self, opcode: u16, payload: &[u8], map_id: u32) {
+        let Ok(events) = decode_remote_world_trace(opcode, payload) else {
+            self.invalidate_remote_marker();
+            return;
+        };
+        for event in events {
+            match event {
+                RemoteWorldTraceEvent::PlayerCreate { guid, movement }
+                    if self.remote_guid.is_none_or(|known| known == guid) =>
+                {
+                    self.remote_guid = Some(guid);
+                    self.push(
+                        "create-object2",
+                        guid,
+                        None,
+                        Some(trace_pose(map_id, movement)),
+                    );
+                }
+                RemoteWorldTraceEvent::Movement {
+                    guid,
+                    movement,
+                    opcode,
+                } if self.remote_guid == Some(guid) => {
+                    self.push(
+                        "movement",
+                        guid,
+                        Some(opcode),
+                        Some(trace_pose(map_id, movement)),
+                    );
+                }
+                RemoteWorldTraceEvent::OutOfRange { guid } if self.remote_guid == Some(guid) => {
+                    self.push("out-of-range", guid, None, None);
+                    self.remote_guid = None;
+                }
+                RemoteWorldTraceEvent::Destroy { guid } if self.remote_guid == Some(guid) => {
+                    self.push("destroy", guid, None, None);
+                    self.remote_guid = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn invalidate_remote_marker(&mut self) {
+        if let Some(guid) = self.remote_guid.take() {
+            self.push("remote-fault", guid, None, None);
+        }
+    }
+
+    fn push(
+        &mut self,
+        kind: &'static str,
+        guid: u64,
+        opcode: Option<u16>,
+        pose: Option<WorldPose>,
+    ) {
+        if self.events.len() < REMOTE_TRANSCRIPT_MAX_EVENTS {
+            self.events.push(RemoteTranscriptEvent {
+                kind,
+                guid,
+                opcode,
+                pose,
+            });
+        }
+    }
+
+    fn persist(&self) -> io::Result<()> {
+        let mut output = String::from("{\"schema\":\"miazcore.remote-transcript.v1\",\"events\":[");
+        for (index, event) in self.events.iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            write!(
+                output,
+                "{{\"kind\":\"{}\",\"guid\":\"{:x}\"",
+                event.kind, event.guid
+            )
+            .expect("writing to String cannot fail");
+            if let Some(opcode) = event.opcode {
+                write!(output, ",\"opcode\":\"0x{opcode:04x}\"")
+                    .expect("writing to String cannot fail");
+            }
+            if let Some(pose) = event.pose {
+                write!(
+                    output,
+                    ",\"map_id\":{},\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3},\"orientation\":{:.3}",
+                    pose.map_id, pose.east, pose.north, pose.elevation, pose.orientation
+                )
+                .expect("writing to String cannot fail");
+            }
+            output.push('}');
+        }
+        output.push_str("]}\n");
+        let temporary = self.output.with_extension("tmp");
+        fs::write(&temporary, output)?;
+        fs::rename(temporary, &self.output)
+    }
+}
+
+fn trace_pose(map_id: u32, movement: AcoreMovementInfo) -> WorldPose {
+    let [east, north, elevation] = movement.position();
+    WorldPose {
+        map_id,
+        east,
+        north,
+        elevation,
+        orientation: movement.orientation(),
+    }
+}
+
 pub(crate) fn spawn_production_worker(
+    loaded: LoadedClientConfig,
+    boundary: WorkerBoundary,
+    target: WorkerTarget,
+) -> Result<JoinHandle<()>, BoundaryError> {
+    spawn_production_worker_with_remote_trace(loaded, boundary, target, None)
+}
+
+pub(crate) fn spawn_production_worker_with_remote_trace(
     loaded: LoadedClientConfig,
     mut boundary: WorkerBoundary,
     target: WorkerTarget,
+    remote_trace_output: Option<PathBuf>,
 ) -> Result<JoinHandle<()>, BoundaryError> {
     thread::Builder::new()
         .name("miazcore-entry-worker".to_owned())
         .spawn(move || {
             let (config, mut credentials) = loaded.into_parts();
             credentials.normalize_for_login();
-            run_worker_loop_for(
+            let mut trace = remote_trace_output.map(RemoteTranscript::new);
+            run_worker_loop_for_with_remote_trace(
                 &config,
                 &credentials,
                 &mut boundary,
@@ -150,7 +302,21 @@ pub(crate) fn spawn_production_worker(
                 &mut SystemClock::new(),
                 &mut SystemEntropy,
                 target,
+                trace.as_mut(),
             );
+            if let Some(trace) = trace
+                && trace.persist().is_err()
+            {
+                boundary.fail(
+                    ControlCommand::Disconnect.kind(),
+                    ClientFailure::new(
+                        FailureCategory::Configuration,
+                        "remote transcript",
+                        "could not write semantic transcript",
+                        RecoveryAction::RetryExplicitly,
+                    ),
+                );
+            }
             boundary.mark_stopped();
         })
         .map_err(|_| BoundaryError::WorkerStopped)
@@ -181,6 +347,7 @@ fn run_worker_loop<F, C, E>(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[cfg(test)]
 fn run_worker_loop_for<F, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
@@ -189,6 +356,33 @@ fn run_worker_loop_for<F, C, E>(
     clock: &mut C,
     entropy: &mut E,
     target: WorkerTarget,
+) where
+    F: TransportFactory,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    run_worker_loop_for_with_remote_trace(
+        config,
+        credentials,
+        boundary,
+        factory,
+        clock,
+        entropy,
+        target,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_worker_loop_for_with_remote_trace<F, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    factory: &mut F,
+    clock: &mut C,
+    entropy: &mut E,
+    target: WorkerTarget,
+    mut remote_trace: Option<&mut RemoteTranscript>,
 ) where
     F: TransportFactory,
     C: MonotonicClock,
@@ -227,7 +421,7 @@ fn run_worker_loop_for<F, C, E>(
                 if command == ControlCommand::RetryEntry {
                     boundary.reset_for_retry();
                 }
-                match run_entry_attempt(
+                match run_entry_attempt_with_remote_trace(
                     config,
                     credentials,
                     boundary,
@@ -235,6 +429,7 @@ fn run_worker_loop_for<F, C, E>(
                     clock,
                     entropy,
                     target,
+                    remote_trace.as_deref_mut(),
                 ) {
                     Ok(outcome) => {
                         let movement_ready = matches!(&outcome, EntryAttemptOutcome::MovementReady);
@@ -344,6 +539,7 @@ fn run_worker_loop_for<F, C, E>(
     }
 }
 
+#[cfg(test)]
 fn run_entry_attempt<F, C, E>(
     config: &ClientConfig,
     credentials: &CredentialMaterial,
@@ -358,7 +554,35 @@ where
     C: MonotonicClock,
     E: EntropySource,
 {
-    run_entry_attempt_mode(
+    run_entry_attempt_with_remote_trace(
+        config,
+        credentials,
+        boundary,
+        factory,
+        clock,
+        entropy,
+        target,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_entry_attempt_with_remote_trace<F, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    factory: &mut F,
+    clock: &mut C,
+    entropy: &mut E,
+    target: WorkerTarget,
+    remote_trace: Option<&mut RemoteTranscript>,
+) -> Result<EntryAttemptOutcome, DiscoveryError>
+where
+    F: TransportFactory,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    run_entry_attempt_mode_with_remote_trace(
         config,
         credentials,
         boundary,
@@ -367,6 +591,7 @@ where
         entropy,
         target,
         EntryMode::Initial,
+        remote_trace,
     )
 }
 
@@ -380,6 +605,36 @@ fn run_entry_attempt_mode<F, C, E>(
     entropy: &mut E,
     target: WorkerTarget,
     entry_mode: EntryMode,
+) -> Result<EntryAttemptOutcome, DiscoveryError>
+where
+    F: TransportFactory,
+    C: MonotonicClock,
+    E: EntropySource,
+{
+    run_entry_attempt_mode_with_remote_trace(
+        config,
+        credentials,
+        boundary,
+        factory,
+        clock,
+        entropy,
+        target,
+        entry_mode,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_entry_attempt_mode_with_remote_trace<F, C, E>(
+    config: &ClientConfig,
+    credentials: &CredentialMaterial,
+    boundary: &mut WorkerBoundary,
+    factory: &mut F,
+    clock: &mut C,
+    entropy: &mut E,
+    target: WorkerTarget,
+    entry_mode: EntryMode,
+    remote_trace: Option<&mut RemoteTranscript>,
 ) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     F: TransportFactory,
@@ -459,6 +714,7 @@ where
         &session_key,
         target,
         entry_mode,
+        remote_trace,
     );
     let _ = world_transport.close();
     if result.is_err() {
@@ -665,6 +921,7 @@ fn select_character<T, C, E>(
     session_key: &[u8; 40],
     target: WorkerTarget,
     entry_mode: EntryMode,
+    remote_trace: Option<&mut RemoteTranscript>,
 ) -> Result<EntryAttemptOutcome, DiscoveryError>
 where
     T: LoginTransport,
@@ -817,6 +1074,7 @@ where
             bootstrap.anchor,
             selected.guid(),
             bootstrap.run_speed,
+            remote_trace,
         )?
     {
         return Ok(EntryAttemptOutcome::MovementProofRequested { expected });
@@ -1151,6 +1409,7 @@ fn run_live_movement_loop<T, C>(
     anchor: WorldPose,
     active_mover: u64,
     run_speed: f32,
+    mut remote_trace: Option<&mut RemoteTranscript>,
 ) -> Result<RetainedLoopExit, DiscoveryError>
 where
     T: LoginTransport,
@@ -1177,6 +1436,8 @@ where
             &mut server_decoder,
             client_stream,
             active_mover,
+            remote_trace.as_deref_mut(),
+            anchor.map_id,
         )?;
         match boundary.receive_control(Duration::from_millis(16)) {
             Ok(ControlCommand::Disconnect) => {
@@ -1505,6 +1766,8 @@ fn poll_live_world_frames<T, C>(
     decoder: &mut IncrementalWorldServerDecoder,
     client_stream: &mut WorldClientStream,
     active_mover: u64,
+    mut remote_trace: Option<&mut RemoteTranscript>,
+    map_id: u32,
 ) -> Result<(), DiscoveryError>
 where
     T: LoginTransport,
@@ -1543,6 +1806,9 @@ where
             RecoveryAction::CheckReferenceRealm,
         )
     })? {
+        if let Some(trace) = remote_trace.as_deref_mut() {
+            trace.observe(frame.opcode(), frame.payload(), map_id);
+        }
         match frame.opcode() {
             SMSG_TIME_SYNC_REQ => {
                 let counter = decode_time_sync_request(frame.payload()).map_err(|error| {
@@ -2131,6 +2397,7 @@ impl EntropySource for SystemEntropy {
 mod tests {
     use std::{
         collections::VecDeque,
+        fs,
         io::{self, Cursor, Read, Write},
         net::{IpAddr, Ipv4Addr, SocketAddr},
         path::PathBuf,
@@ -2160,9 +2427,9 @@ mod tests {
 
     use super::{
         DiscoveryError, EntropySource, EntryAttemptOutcome, LoginTransport, MonotonicClock,
-        SelectedCharacter, SelectedCharacterFields, TransportFactory, WorkerTarget,
-        poll_live_world_frames, run_entry_attempt, run_live_movement_loop, run_worker_loop,
-        run_worker_loop_for, validate_selected_location, wait_for_logout_complete,
+        RemoteTranscript, SelectedCharacter, SelectedCharacterFields, TransportFactory,
+        WorkerTarget, poll_live_world_frames, run_entry_attempt, run_live_movement_loop,
+        run_worker_loop, run_worker_loop_for, validate_selected_location, wait_for_logout_complete,
         wait_for_offline_settlement, write_movement_frame,
     };
 
@@ -2171,6 +2438,53 @@ mod tests {
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e,
         0x1f, 0x20,
     ];
+
+    #[test]
+    fn remote_transcript_persists_only_allowlisted_semantic_fields() {
+        let path = std::env::temp_dir().join(format!(
+            "miazcore-remote-transcript-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let mut transcript = RemoteTranscript::new(path.clone());
+        transcript.push(
+            "create",
+            0x0100_0000_0000_0002,
+            None,
+            Some(WorldPose {
+                map_id: 0,
+                east: 1.0,
+                north: 2.0,
+                elevation: 3.0,
+                orientation: 0.5,
+            }),
+        );
+        transcript.push("destroy", 0x0100_0000_0000_0002, None, None);
+        transcript.persist().unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("remote-transcript.v1"));
+        for forbidden in ["password", "account", "session", "cipher", "payload"] {
+            assert!(!contents.contains(forbidden));
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn malformed_remote_trace_record_removes_only_the_marker() {
+        let path = std::env::temp_dir().join(format!(
+            "miazcore-remote-transcript-fault-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let mut transcript = RemoteTranscript::new(path);
+        transcript.remote_guid = Some(0x0100_0000_0000_0002);
+
+        transcript.observe(SMSG_UPDATE_OBJECT, &[0], 0);
+
+        assert_eq!(transcript.remote_guid, None);
+        assert_eq!(transcript.events.len(), 1);
+        assert_eq!(transcript.events[0].kind, "remote-fault");
+    }
 
     #[test]
     fn initial_entry_accepts_bounded_realm_spawn_settlement_but_not_a_large_delta() {
@@ -2638,6 +2952,7 @@ mod tests {
                 anchor,
                 0x1122_3344_5566_7788,
                 7.0,
+                None,
             )
             .is_ok()
         );
@@ -2717,6 +3032,7 @@ mod tests {
                 anchor,
                 0x1122_3344_5566_7788,
                 7.0,
+                None,
             )
             .is_ok()
         );
@@ -3693,6 +4009,8 @@ mod tests {
                 &mut decoder,
                 &mut client_stream,
                 42,
+                None,
+                0,
             )
             .is_ok()
         );
@@ -3707,6 +4025,8 @@ mod tests {
                 &mut decoder,
                 &mut client_stream,
                 42,
+                None,
+                0,
             )
             .is_ok()
         );
@@ -3790,6 +4110,8 @@ mod tests {
                 &mut decoder,
                 &mut client_stream,
                 42,
+                None,
+                0,
             )
             .is_err()
         );

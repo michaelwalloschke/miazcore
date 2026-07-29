@@ -32,7 +32,7 @@ impl HeadlessSession {
         loaded: LoadedClientConfig,
         target: WorkerTarget,
     ) -> Result<Self, BoundaryError> {
-        Self::start_with_proof_stage(loaded, target, None)
+        Self::start_with_outputs(loaded, target, None, None)
     }
 
     pub(crate) fn start_with_proof_stage(
@@ -40,13 +40,38 @@ impl HeadlessSession {
         target: WorkerTarget,
         proof_stage_output: Option<PathBuf>,
     ) -> Result<Self, BoundaryError> {
+        Self::start_with_outputs(loaded, target, proof_stage_output, None)
+    }
+
+    pub(crate) fn start_with_remote_trace(
+        loaded: LoadedClientConfig,
+        target: WorkerTarget,
+        remote_trace_output: PathBuf,
+    ) -> Result<Self, BoundaryError> {
+        Self::start_with_outputs(loaded, target, None, Some(remote_trace_output))
+    }
+
+    fn start_with_outputs(
+        loaded: LoadedClientConfig,
+        target: WorkerTarget,
+        proof_stage_output: Option<PathBuf>,
+        remote_trace_output: Option<PathBuf>,
+    ) -> Result<Self, BoundaryError> {
         let identity = loaded.config().identity().clone();
         let (client, boundary) = if proof_stage_output.is_some() {
             new_boundary_with_proof_stage(identity, proof_stage_output)?
         } else {
             new_boundary(identity)?
         };
-        let worker = runtime::spawn_production_worker(loaded, boundary, target)?;
+        let worker = match remote_trace_output {
+            Some(output) => runtime::spawn_production_worker_with_remote_trace(
+                loaded,
+                boundary,
+                target,
+                Some(output),
+            )?,
+            None => runtime::spawn_production_worker(loaded, boundary, target)?,
+        };
         Ok(Self {
             client,
             worker: Some(worker),
