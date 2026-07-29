@@ -1,7 +1,7 @@
 # Trace the remote-player World-Update boundary
 
 Type: wayfinder:research
-Status: claimed
+Status: resolved
 Blocked by: [Measure Reference Realm multi-session behavior](01-measure-reference-realm-multi-session-behavior.md)
 
 ## Question
@@ -26,7 +26,8 @@ a separate query protocol, so arbitrary update-field decoding remains deferred.
 
 ## Comments
 
-- 2026-07-29: Source tracing and the frame-safe contract are complete. The
-  required reset-scoped local semantic transcript of peer create, movement, and
-  clean removal is still outstanding; no raw authenticated traffic has been
-  retained as a substitute.
+- 2026-07-29: Resolved by the reset-scoped semantic trace harness and a
+  checked-in reviewed evidence record. Both retain only peer GUID, lifecycle,
+  movement opcode, map, and finite pose: CreateObject2 → Heartbeat/Stop →
+  Destroy after the controlled logout proof. No raw authenticated traffic is
+  retained.

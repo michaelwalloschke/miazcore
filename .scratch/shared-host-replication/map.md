@@ -39,7 +39,7 @@ appear, perform a bounded move, and disappear after clean logout.
 
 - [Reference Realm multi-session behavior](research/01-reference-realm-multi-session-behavior.md): two separate loopback sessions can become concurrently `MovementReady` with distinct GUIDs and co-located Entry Anchors; Realm `online` settlement is asynchronous (60–61 s in the measured run), and a duplicate Fixture Profile run ended with the first session `failed` and the second `movement-ready`. World-Update visibility remains unmeasured.
 - [Fixture Pair provisioning contract](research/02-fixture-pair-provisioning.md): an isolated new Pair A/B is separate from the existing single-client fixture, `reset-state` owns all three fixtures, and Pair B starts exactly three metres east of Pair A after a local Placement Probe.
-- [Remote-player World-Update boundary](research/03-remote-player-world-update-boundary.md): source tracing identifies a non-self player `CreateObject2`, GUID-prefixed `MSG_MOVE_*`, and destruction/out-of-range removal families; a reset-scoped local semantic transcript is still required before this boundary is resolved. Names are a separate query protocol; arbitrary update-field decoding is deferred.
+- [Remote-player World-Update boundary](research/03-remote-player-world-update-boundary.md): source tracing and the reset-scoped local semantic transcript establish a non-self player `CreateObject2`, peer `MSG_MOVE_HEARTBEAT`/`MSG_MOVE_STOP`, and `SMSG_DESTROY_OBJECT` after controlled logout. Names are a separate query protocol; arbitrary update-field decoding is deferred.
 
 ## Not yet specified
 

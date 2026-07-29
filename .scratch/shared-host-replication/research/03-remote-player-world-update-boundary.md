@@ -16,13 +16,13 @@ peer is removed by `SMSG_DESTROY_OBJECT` or an out-of-range GUID list.
 | [AzerothCore source](https://github.com/azerothcore/azerothcore-wotlk/tree/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f) | `a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f`, also locked in [`infra/azerothcore/artifacts.lock`](../../../infra/azerothcore/artifacts.lock) | Compatibility authority for the local Reference Realm. |
 | [Reference Realm multi-session behavior](01-reference-realm-multi-session-behavior.md) | Local reset-scoped measurement reached two concurrent `MovementReady` sessions with distinct GUIDs on map `0`. | Establishes the local same-map precondition. |
 | Existing World-entry parser | [`crates/client_protocol/src/world_entry.rs`](../../../crates/client_protocol/src/world_entry.rs) | Already frames encrypted World messages, bounded-inflates update containers, and structurally consumes all six update-block kinds. |
+| Local semantic lifecycle trace | Generated only by a clean-worktree `scripts/trace-remote-world-updates.sh` run and retained under ignored `artifacts/remote-world-trace/` | The checked-in evidence record below preserves the reviewed semantic facts without raw authenticated traffic. |
 
 No raw authenticated traffic, session keys, credentials, unredacted runtime
 logs, or packet payloads are retained by this research. The transcript below
-is a semantic source-and-local-environment analysis, not a replay fixture. A
-future live experiment may retain only allowlisted semantic facts such as
-opcode family, lifecycle kind, GUID relation, map id, finite pose, and elapsed
-time.
+is a semantic source-and-local-environment analysis, not a replay fixture. The
+completed local trace retains only allowlisted lifecycle kind, opcode, GUID
+relation, map id, and finite pose.
 
 ## Semantic transcript
 
@@ -71,6 +71,13 @@ Only a packet whose actor GUID was already created can update the accepted
 Remote Avatar. The timestamp is ordering evidence, never a local prediction
 clock. A complete valid packet for another GUID is irrelevant but remains
 properly framed and decoded.
+
+The reset-scoped local trace observed `MSG_MOVE_HEARTBEAT` (`0x00ee`) four
+times at progressively changed east coordinates, then `MSG_MOVE_STOP`
+(`0x00b7`) at the final pose. It did not observe a forwarded start packet in
+this run. The later decoder must therefore accept the full source-defined
+family but must not require a start packet before rendering a valid peer
+movement update.
 
 ### Removal
 
@@ -132,15 +139,17 @@ created.
   one accepted Remote Avatar per observer.
 - Local prediction, reconciliation, or persistence claims for remote players.
 
-## Required follow-up proof
+## Completed local proof
 
-The remaining completion step for this ticket is a reset-scoped Fixture Pair
-probe that retains only allowlisted semantic events proving the order:
+The reset-scoped Fixture Pair probe retained only allowlisted semantic events
+and proved the order:
 
 ```text
-remote CreateObject2 -> remote Start/Heartbeat/Stop -> remote DestroyObject
+remote CreateObject2 -> remote Heartbeat/Stop -> remote DestroyObject
 ```
 
-It must prove that `DestroyObject` actually follows the controlled clean
-logout. Ticket 09 then uses the same capture boundary to set update-cadence and
-removal timing tolerances for the exact local Fixture Pair.
+The Destroy followed the peer's controlled logout proof. A subsequent create
+for the same GUID is expected because that proof intentionally establishes a
+fresh session; it does not erase the preceding removal observation. Ticket 09
+still uses this capture boundary to set update-cadence and removal timing
+tolerances for the exact local Fixture Pair.
