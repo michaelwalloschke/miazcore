@@ -32,6 +32,10 @@ _Avoid_: Windows support, internet multiplayer, public server
 Two separately authenticated, reset-scoped Reference Realm test Characters provisioned for the Shared-Host Multi-client Simulation. They may log in concurrently and begin close enough for a deterministic Realm-replication proof.
 _Avoid_: duplicate login, ad hoc player account, production identity
 
+**Fixture Pair Start Placement**:
+The reset-provisioned, same-map coordinate relation for the two Fixture Pair members. It is accepted only after a local Placement Probe proves the members can reach Movement-ready Session at the declared relation. It is not an Entry Anchor, which is Realm-observed only after login.
+_Avoid_: Entry Anchor, local origin, remote-avatar evidence
+
 **Fixture Profile**:
 A named, non-sensitive Learning Client launch selection for one Fixture Pair member. It resolves to a separate private credential file and fixed test Character without accepting credentials through command-line arguments or emitting them in evidence.
 _Avoid_: account name flag, shared credential, credential-bearing configuration
