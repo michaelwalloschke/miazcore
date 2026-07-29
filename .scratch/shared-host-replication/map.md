@@ -41,6 +41,7 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Fixture Pair provisioning contract](research/02-fixture-pair-provisioning.md): an isolated new Pair A/B is separate from the existing single-client fixture, `reset-state` owns all three fixtures, and Pair B starts exactly three metres east of Pair A after a local Placement Probe.
 - [Remote-player World-Update boundary](research/03-remote-player-world-update-boundary.md): source tracing and the reset-scoped local semantic transcript establish a non-self player `CreateObject2`, peer `MSG_MOVE_HEARTBEAT`/`MSG_MOVE_STOP`, and `SMSG_DESTROY_OBJECT` after controlled logout. Names are a separate query protocol; arbitrary update-field decoding is deferred.
 - [Realm-replicated Avatar contract](research/04-realm-replicated-avatar-contract.md): the World-session boundary owns one GUID-keyed Remote Avatar's lifecycle and raw Realm-observed Pose; Bevy alone owns its smoothed Rendered Pose. Remote prediction and a second accepted Avatar are out of scope.
+- [Fixture Profile and secret contract](research/05-fixture-profile-and-secret-contract.md): `--fixture-profile pair-a|pair-b` is a closed, non-sensitive CLI selector. The binary privately maps it to a fixed Character and separate ignored `0600` credential files; the existing session loader remains the only credential boundary.
 
 ## Not yet specified
 
