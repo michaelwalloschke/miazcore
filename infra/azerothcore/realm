@@ -72,7 +72,9 @@ case "${1:-}" in
     up)
         require_secrets
         "${compose[@]}" config --quiet
-        "${compose[@]}" pull
+        if [[ "${MIAZCORE_SKIP_PULL:-0}" != 1 ]]; then
+            "${compose[@]}" pull
+        fi
         "${compose[@]}" up --detach --wait --wait-timeout 900
         # One-shot import/provision work may recreate or restart MySQL while an
         # existing server container remains up. Always finish with fresh server

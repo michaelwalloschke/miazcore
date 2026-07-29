@@ -37,13 +37,15 @@ appear, perform a bounded move, and disappear after clean logout.
 
 ## Decisions so far
 
-<!-- Closed child tickets will be linked here, one gist per ticket. -->
+- [Reference Realm multi-session behavior](research/01-reference-realm-multi-session-behavior.md): two separate loopback sessions can become concurrently `MovementReady` with distinct GUIDs and co-located Entry Anchors; Realm `online` settlement is asynchronous (60–61 s in the measured run), and a duplicate Fixture Profile run ended with the first session `failed` and the second `movement-ready`. World-Update visibility remains unmeasured.
 
 ## Not yet specified
 
-- Exact remote World-Update layout, timing behaviour, and the fixture Pair's
-  safe placement must be measured from the local Reference Realm before their
-  implementation contracts can be locked.
+- Exact remote World-Update layout and timing behaviour must be measured from
+  the local Reference Realm before their implementation contracts can be
+  locked. The Fixture Pair's same-map initial proximity and logout-settlement
+  requirement are now measured; durable account/profile and reset ownership
+  remain Ticket 02 decisions.
 - The implementation slices, evidence schema, and Windows/LAN follow-up
   boundaries will be refined only after the earlier protocol and environment
   decisions are resolved.
@@ -57,4 +59,3 @@ appear, perform a bounded move, and disappear after clean logout.
   session management.
 - Chat, groups, combat, inventory, quests, social systems, collision, terrain,
   authored content, Blizzard assets, or a World of Warcraft client replacement.
-

@@ -1,7 +1,7 @@
 # Measure Reference Realm multi-session behavior
 
 Type: wayfinder:research
-Status: open
+Status: resolved
 Blocked by: None — can start immediately
 
 ## Question
@@ -19,3 +19,9 @@ and project tooling. It must distinguish observed fact from assumption, contain
 no credentials or raw authenticated traffic, and identify every later decision
 that depends on measured Realm behaviour.
 
+## Answer
+
+[Reference Realm multi-session behavior](../research/01-reference-realm-multi-session-behavior.md)
+records the redacted concurrent-login, proximity, logout-settlement, and
+duplicate-login observations. It also names the unmeasured World-Update and
+presentation claims that remain owned by later tickets.
