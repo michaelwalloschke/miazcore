@@ -1,0 +1,20 @@
+{
+  "schema": "miazcore.remote-world-update-evidence.v1",
+  "recorded_at": "2026-07-29",
+  "captured_from_commit": "3ec2d83e79dfa472890bde9a439ce943ee2e4602",
+  "source_artifact": "artifacts/remote-world-trace/20260729T114144Z-3ec2d83e79df/",
+  "map_id": 0,
+  "observer_guid": "1",
+  "peer_guid": "2",
+  "events": [
+    {"kind": "create-object2", "guid": "2", "map_id": 0, "east": -8949.950, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00ee", "map_id": 0, "east": -8949.253, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00ee", "map_id": 0, "east": -8948.556, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00ee", "map_id": 0, "east": -8947.858, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00ee", "map_id": 0, "east": -8947.045, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00ee", "map_id": 0, "east": -8946.464, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "movement", "guid": "2", "opcode": "0x00b7", "map_id": 0, "east": -8946.231, "north": -132.493, "elevation": 83.531, "orientation": 1.571},
+    {"kind": "destroy", "guid": "2"}
+  ],
+  "postcondition": "The next create-object2 for GUID 2 was a fresh reconnect after the controlled logout proof."
+}

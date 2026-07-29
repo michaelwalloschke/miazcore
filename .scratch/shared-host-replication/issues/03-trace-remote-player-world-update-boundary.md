@@ -26,8 +26,9 @@ a separate query protocol, so arbitrary update-field decoding remains deferred.
 
 ## Comments
 
-- 2026-07-29: Resolved by the reset-scoped semantic trace harness and a
-  checked-in reviewed evidence record. Both retain only peer GUID, lifecycle,
-  movement opcode, map, and finite pose: CreateObject2 → Heartbeat/Stop →
-  Destroy after the controlled logout proof. No raw authenticated traffic is
-  retained.
+- 2026-07-29: Resolved by the reset-scoped semantic trace harness and the
+  checked-in reviewed [evidence record](../research/03-remote-player-world-update-evidence.json),
+  captured from `3ec2d83e79dfa472890bde9a439ce943ee2e4602`. It retains only peer
+  GUID, lifecycle, movement opcode, map, and finite pose: CreateObject2 →
+  Heartbeat/Stop → Destroy after the controlled logout proof. No raw
+  authenticated traffic is retained.

@@ -16,7 +16,7 @@ peer is removed by `SMSG_DESTROY_OBJECT` or an out-of-range GUID list.
 | [AzerothCore source](https://github.com/azerothcore/azerothcore-wotlk/tree/a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f) | `a4ab07218aa0a7a4ff7b1a2c259bcead0bdfa61f`, also locked in [`infra/azerothcore/artifacts.lock`](../../../infra/azerothcore/artifacts.lock) | Compatibility authority for the local Reference Realm. |
 | [Reference Realm multi-session behavior](01-reference-realm-multi-session-behavior.md) | Local reset-scoped measurement reached two concurrent `MovementReady` sessions with distinct GUIDs on map `0`. | Establishes the local same-map precondition. |
 | Existing World-entry parser | [`crates/client_protocol/src/world_entry.rs`](../../../crates/client_protocol/src/world_entry.rs) | Already frames encrypted World messages, bounded-inflates update containers, and structurally consumes all six update-block kinds. |
-| Local semantic lifecycle trace | Generated only by a clean-worktree `scripts/trace-remote-world-updates.sh` run and retained under ignored `artifacts/remote-world-trace/` | The checked-in evidence record below preserves the reviewed semantic facts without raw authenticated traffic. |
+| Local semantic lifecycle trace | [`03-remote-player-world-update-evidence.json`](03-remote-player-world-update-evidence.json), captured from `3ec2d83e79dfa472890bde9a439ce943ee2e4602`; source artifact `artifacts/remote-world-trace/20260729T114144Z-3ec2d83e79df/` remains local and ignored | Reset-scoped observer transcript: peer GUID `2` created through `CreateObject2` on map `0`, emitted five `0x00ee` heartbeats and one `0x00b7` stop, then received `SMSG_DESTROY_OBJECT`. |
 
 No raw authenticated traffic, session keys, credentials, unredacted runtime
 logs, or packet payloads are retained by this research. The transcript below
@@ -72,7 +72,7 @@ Remote Avatar. The timestamp is ordering evidence, never a local prediction
 clock. A complete valid packet for another GUID is irrelevant but remains
 properly framed and decoded.
 
-The reset-scoped local trace observed `MSG_MOVE_HEARTBEAT` (`0x00ee`) four
+The reset-scoped local trace observed `MSG_MOVE_HEARTBEAT` (`0x00ee`) five
 times at progressively changed east coordinates, then `MSG_MOVE_STOP`
 (`0x00b7`) at the final pose. It did not observe a forwarded start packet in
 this run. The later decoder must therefore accept the full source-defined
@@ -100,6 +100,11 @@ The create's values mask may expose public numeric fields such as
 This ticket therefore authorizes neither a name nor a model decoder from opaque
 values. The initial marker labels itself with a GUID shorthand. A later,
 bounded name-query cache is a separate slice.
+
+No display metadata is accepted by this boundary: neither names nor numeric
+display/model values are retained or interpreted. Map identity is the
+observer's authenticated map context; the trace confirms map `0` for this
+same-map local run rather than deriving a map from a peer values mask.
 
 ## Minimal decoding contract for Ticket 13
 
