@@ -30,17 +30,26 @@ RemoteAvatarSnapshot
   realm_observed_pose: WorldPose
   source_sequence: u64
 
+RemoteAvatarRemovalSource
+  DestroyObject
+  OutOfRange
+
 RemoteAvatarEvent
+  { sequence, change }
+
+RemoteAvatarChange
   Created { id, realm_observed_pose }
   Updated { id, realm_observed_pose }
-  Removed { id, source }
+  Removed { id, source: RemoteAvatarRemovalSource }
 ```
 
 `ClientSnapshot` later contains `remote_avatar: Option<RemoteAvatarSnapshot>`.
 It is the latest complete World-session truth, not an event history. The
 existing bounded, lossless semantic-event FIFO carries every lifecycle or pose
-transition in order; `source_sequence` lets the consumer correlate a snapshot
-with that event stream without exposing a packet, cipher, or transport handle.
+transition in order. Every `RemoteAvatarEvent.sequence` is the same monotonic
+semantic-event sequence used by the FIFO; `source_sequence` identifies the
+exact event that produced the latest Snapshot without exposing a packet,
+cipher, or transport handle.
 
 Create initializes both the Snapshot's identity and its Realm-observed Pose.
 Update replaces only the raw Realm-observed Pose for the same ID. Destroy or a
@@ -50,10 +59,12 @@ absent GUID cannot create, merge, or relabel a Remote Avatar. The precise
 redacted diagnostic and marker-fault outcome for unusable records is owned by
 Ticket 08.
 
-While the first acceptance slot is occupied, a different eligible GUID is not
-allowed to replace it. It is rejected through the later Remote Avatar Fault
-Boundary; this contract deliberately does not grow a multi-avatar collection
-or an arbitrary-object registry.
+While the first acceptance slot is occupied, a different eligible GUID is a
+valid but ignored acceptance-capacity outcome: it cannot replace the accepted
+ID, create a second marker, or mutate the Snapshot. The later Remote Avatar
+Fault Boundary owns malformed or unusable records, not this valid one-avatar
+limit. This contract deliberately does not grow a multi-avatar collection or
+an arbitrary-object registry.
 
 ## Presentation contract
 
@@ -108,8 +119,8 @@ Rendered-Pose transition.
 
 1. A scripted contract test proves Create → Update → Removed for one stable
    GUID, with each Update carrying a finite Realm-observed Pose.
-2. It proves a second GUID cannot replace the accepted ID and that stale or
-   unmatched transitions do not create a marker.
+2. It proves a second eligible GUID is ignored without replacing the accepted
+   ID, and that stale or unmatched transitions do not create a marker.
 3. A projection test proves Rendered Pose can change only toward an explicit
    Remote Avatar Realm-observed Pose, never from local movement truth.
 4. A removal test proves both the Snapshot entry and Bevy marker disappear;
