@@ -39,13 +39,14 @@ appear, perform a bounded move, and disappear after clean logout.
 
 - [Reference Realm multi-session behavior](research/01-reference-realm-multi-session-behavior.md): two separate loopback sessions can become concurrently `MovementReady` with distinct GUIDs and co-located Entry Anchors; Realm `online` settlement is asynchronous (60–61 s in the measured run), and a duplicate Fixture Profile run ended with the first session `failed` and the second `movement-ready`. World-Update visibility remains unmeasured.
 - [Fixture Pair provisioning contract](research/02-fixture-pair-provisioning.md): an isolated new Pair A/B is separate from the existing single-client fixture, `reset-state` owns all three fixtures, and Pair B starts exactly three metres east of Pair A after a local Placement Probe.
+- [Remote-player World-Update boundary](research/03-remote-player-world-update-boundary.md): source tracing identifies a non-self player `CreateObject2`, GUID-prefixed `MSG_MOVE_*`, and destruction/out-of-range removal families; a reset-scoped local semantic transcript is still required before this boundary is resolved. Names are a separate query protocol; arbitrary update-field decoding is deferred.
 
 ## Not yet specified
 
-- Exact remote World-Update layout and timing behaviour must be measured from
-  the local Reference Realm before their implementation contracts can be
-  locked. The Fixture Pair's same-map initial proximity, fixed placement, and
-  reset ownership are now decided; profile launch syntax remains a Ticket 05
+- Exact remote World-Update timing and opcode cadence must be measured from the
+  local Reference Realm before their implementation contracts can be locked.
+  The Fixture Pair's same-map initial proximity, fixed placement, and reset
+  ownership are now decided; profile launch syntax remains a Ticket 05
   decision.
 - The implementation slices, evidence schema, and Windows/LAN follow-up
   boundaries will be refined only after the earlier protocol and environment
