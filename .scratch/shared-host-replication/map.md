@@ -43,6 +43,7 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Realm-replicated Avatar contract](research/04-realm-replicated-avatar-contract.md): the World-session boundary owns one GUID-keyed Remote Avatar's lifecycle and raw Realm-observed Pose; Bevy alone owns its smoothed Rendered Pose. Remote prediction and a second accepted Avatar are out of scope.
 - [Fixture Profile and secret contract](research/05-fixture-profile-and-secret-contract.md): `--fixture-profile pair-a|pair-b` is a closed, non-sensitive CLI selector. The binary privately maps it to a fixed Character and separate ignored `0600` credential files; the existing session loader remains the only credential boundary.
 - [Loopback multi-client topology](research/06-loopback-multi-client-topology.md): one canonical loopback-only Docker Realm is guarded by the existing atomic Realm-test lock; Pair A/B are independent child processes, and reset/cleanup ownership fails closed on contention or unrecovered Realm health.
+- [Dual-window Diagnostic World experience](research/07-dual-window-diagnostic-experience.md): two independent viewport-first windows make one Local Character and one Remote Avatar Marker unmistakable through separate primitive shapes, GUID shorthand, observed-versus-rendered remote pose rows, lifecycle events, and a redacted fault state.
 
 ## Not yet specified
 
