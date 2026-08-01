@@ -45,6 +45,7 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Loopback multi-client topology](research/06-loopback-multi-client-topology.md): one canonical loopback-only Docker Realm is guarded by the existing atomic Realm-test lock; Pair A/B are independent child processes, and reset/cleanup ownership fails closed on contention or unrecovered Realm health.
 - [Dual-window Diagnostic World experience](research/07-dual-window-diagnostic-experience.md): two independent viewport-first windows make one Local Character and one Remote Avatar Marker unmistakable through separate primitive shapes, GUID shorthand, observed-versus-rendered remote pose rows, lifecycle events, and a redacted fault state.
 - [Remote Avatar fault boundary](research/08-remote-avatar-fault-boundary.md): encrypted-frame or unwalkable-container integrity failures fail the whole World session; after intact framing, unusable accepted-avatar data removes only its marker with a redacted diagnostic, while valid out-of-scope data is fully consumed and ignored.
+- [Replication timeline and tolerances](research/09-replication-timeline-and-tolerances.md): a reset-scoped loopback measurement calibrates bounded Create, movement-cadence, final-stop, and clean-logout removal deadlines; it compares raw final Remote Avatar evidence with stopped Submitted Pose within 0.25 m and smooths only sub-1.0 m remote deltas.
 
 ## Not yet specified
 
