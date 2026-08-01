@@ -20,7 +20,7 @@ usage() {
 
 require_secrets() {
     local name
-    for name in database-password database-root-password fixture-account fixture-password; do
+    for name in database-password database-root-password fixture-account fixture-password fixture-pair-a-account fixture-pair-a-password fixture-pair-b-account fixture-pair-b-password; do
         [[ -s "$base_dir/secrets/$name" ]] || { echo "missing $base_dir/secrets/$name; run '$0 init-secrets'" >&2; exit 64; }
     done
 }
@@ -32,8 +32,12 @@ init_secrets() {
     [[ -e "$base_dir/secrets/database-root-password" ]] || openssl rand -hex 24 >"$base_dir/secrets/database-root-password"
     [[ -e "$base_dir/secrets/fixture-account" ]] || printf 'MIAZTEST\n' >"$base_dir/secrets/fixture-account"
     [[ -e "$base_dir/secrets/fixture-password" ]] || openssl rand -hex 8 >"$base_dir/secrets/fixture-password"
-    chmod 600 "$base_dir"/secrets/{database-password,database-root-password,fixture-account,fixture-password}
-    echo "created or retained four ignored secret files"
+    [[ -e "$base_dir/secrets/fixture-pair-a-account" ]] || printf 'MIAZPAIRA\n' >"$base_dir/secrets/fixture-pair-a-account"
+    [[ -e "$base_dir/secrets/fixture-pair-a-password" ]] || openssl rand -hex 8 >"$base_dir/secrets/fixture-pair-a-password"
+    [[ -e "$base_dir/secrets/fixture-pair-b-account" ]] || printf 'MIAZPAIRB\n' >"$base_dir/secrets/fixture-pair-b-account"
+    [[ -e "$base_dir/secrets/fixture-pair-b-password" ]] || openssl rand -hex 8 >"$base_dir/secrets/fixture-pair-b-password"
+    chmod 600 "$base_dir"/secrets/{database-password,database-root-password,fixture-account,fixture-password,fixture-pair-a-account,fixture-pair-a-password,fixture-pair-b-account,fixture-pair-b-password}
+    echo "created or retained eight ignored secret files"
 }
 
 assert_labeled_volume() {

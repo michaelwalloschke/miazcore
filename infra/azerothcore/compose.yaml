@@ -73,7 +73,7 @@ services:
       AC_DATA_DIR: /azerothcore/env/dist/data
       AC_CONSOLE_ENABLE: "1"
       AC_WARDEN_ENABLED: "0"
-    secrets: [database_password, fixture_account, fixture_password]
+    secrets: [database_password, fixture_account, fixture_password, fixture_pair_a_account, fixture_pair_a_password, fixture_pair_b_account, fixture_pair_b_password]
     volumes:
       - server-data:/azerothcore/env/dist/data:ro
       - ./container/with-secrets.sh:/miazcore/with-secrets.sh:ro
@@ -165,3 +165,7 @@ secrets:
   database_root_password: {file: ./secrets/database-root-password}
   fixture_account: {file: ./secrets/fixture-account}
   fixture_password: {file: ./secrets/fixture-password}
+  fixture_pair_a_account: {file: ./secrets/fixture-pair-a-account}
+  fixture_pair_a_password: {file: ./secrets/fixture-pair-a-password}
+  fixture_pair_b_account: {file: ./secrets/fixture-pair-b-account}
+  fixture_pair_b_password: {file: ./secrets/fixture-pair-b-password}

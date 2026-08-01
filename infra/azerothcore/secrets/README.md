@@ -6,5 +6,9 @@ Run `../realm init-secrets` from this directory's parent. It creates these ignor
 - `database-root-password`
 - `fixture-account`
 - `fixture-password`
+- `fixture-pair-a-account`
+- `fixture-pair-a-password`
+- `fixture-pair-b-account`
+- `fixture-pair-b-password`
 
 The committed Compose model contains only secret filenames. Never commit their contents.
