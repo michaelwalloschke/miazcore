@@ -8,7 +8,7 @@ use std::{
 
 use bevy::{prelude::*, time::TimeUpdateStrategy, window::WindowPlugin};
 use client_bevy::{LearningClientPlugin, RenderProofPlugin, SessionBridge};
-use client_session::{ClientConfig, LiveDiagnosticSession, OfflineSession};
+use client_session::{ClientConfig, FixtureProfile, LiveDiagnosticSession, OfflineSession};
 
 fn main() {
     if let Err(error) = run() {
@@ -23,7 +23,11 @@ fn run() -> Result<(), StartupError> {
     ensure_repository_root(&repository_root)?;
 
     // Configuration and credentials are fully validated before Bevy or a session is constructed.
-    let loaded = ClientConfig::reference_realm(&repository_root)?.load()?;
+    let configuration = match arguments.fixture_profile {
+        Some(profile) => ClientConfig::reference_realm_fixture_profile(&repository_root, profile)?,
+        None => ClientConfig::reference_realm(&repository_root)?,
+    };
+    let loaded = configuration.load()?;
     let session = if arguments.offline
         || arguments.proof_output.is_some()
         || arguments.external_proof_output.is_some()
@@ -108,6 +112,7 @@ struct Arguments {
     persisted_movement_external_proof_output: Option<PathBuf>,
     persisted_movement_fault_injection_external_proof_output: Option<PathBuf>,
     persisted_movement_short_negative_external_proof_output: Option<PathBuf>,
+    fixture_profile: Option<FixtureProfile>,
     offline: bool,
 }
 
@@ -168,6 +173,15 @@ impl Arguments {
                     return Err(StartupError::DuplicateOfflineMode);
                 }
                 parsed.offline = true;
+            } else if argument == "--fixture-profile" {
+                if parsed.fixture_profile.is_some() {
+                    return Err(StartupError::UnsupportedFixtureProfile);
+                }
+                parsed.fixture_profile = match arguments.next().as_deref() {
+                    Some(value) if value == "pair-a" => Some(FixtureProfile::PairA),
+                    Some(value) if value == "pair-b" => Some(FixtureProfile::PairB),
+                    _ => return Err(StartupError::UnsupportedFixtureProfile),
+                };
             } else {
                 return Err(StartupError::UnsupportedArgument);
             }
@@ -197,6 +211,7 @@ enum StartupError {
     DuplicateProofOutput,
     DuplicateOfflineMode,
     OfflineLiveConflict,
+    UnsupportedFixtureProfile,
     WorkingDirectory,
     NotRepositoryRoot,
     Configuration(client_session::ConfigError),
@@ -219,6 +234,7 @@ impl fmt::Display for StartupError {
             Self::OfflineLiveConflict => {
                 formatter.write_str("--offline cannot be combined with a live render proof")
             }
+            Self::UnsupportedFixtureProfile => formatter.write_str("unsupported fixture profile"),
             Self::WorkingDirectory => formatter.write_str("working directory is unavailable"),
             Self::NotRepositoryRoot => {
                 formatter.write_str("run the Learning Client from the repository root")
@@ -254,6 +270,8 @@ fn ensure_repository_root(path: &Path) -> Result<(), StartupError> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+
+    use client_session::FixtureProfile;
 
     use super::{Arguments, StartupError};
 
@@ -362,5 +380,24 @@ mod tests {
         let secret = "do-not-log-this-secret";
         let error = Arguments::parse([OsString::from(secret)]).unwrap_err();
         assert!(!error.to_string().contains(secret));
+    }
+
+    #[test]
+    fn fixture_profile_is_closed_and_redacted() {
+        assert_eq!(
+            Arguments::parse([OsString::from("--fixture-profile"), OsString::from("pair-a")])
+                .unwrap()
+                .fixture_profile,
+            Some(FixtureProfile::PairA)
+        );
+        for invalid in [None, Some("pair-c"), Some("do-not-echo-this")] {
+            let mut values = vec![OsString::from("--fixture-profile")];
+            if let Some(value) = invalid {
+                values.push(OsString::from(value));
+            }
+            let error = Arguments::parse(values).unwrap_err();
+            assert!(matches!(error, StartupError::UnsupportedFixtureProfile));
+            assert!(!error.to_string().contains("do-not-echo-this"));
+        }
     }
 }

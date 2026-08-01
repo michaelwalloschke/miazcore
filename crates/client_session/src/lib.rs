@@ -24,6 +24,7 @@ pub use character::{CharacterSelectionEvidence, CharacterSelectionSession};
 pub use config::{
     ClientConfig, ClientConfigSpec, ConfigError, CredentialFileKind, CredentialFileProblem,
     CredentialPaths, LoadedClientConfig,
+    FixtureProfile,
 };
 pub use movement_ready::{LiveDiagnosticSession, MovementReadyEvidence, MovementReadySession};
 pub use offline::OfflineSession;

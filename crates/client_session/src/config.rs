@@ -14,6 +14,29 @@ use zeroize::Zeroizing;
 use crate::SanitizedIdentity;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixtureProfile {
+    PairA,
+    PairB,
+}
+
+impl FixtureProfile {
+    #[must_use]
+    pub const fn character_name(self) -> &'static str {
+        match self {
+            Self::PairA => "Miazpaira",
+            Self::PairB => "Miazpairb",
+        }
+    }
+
+    const fn credential_stems(self) -> (&'static str, &'static str) {
+        match self {
+            Self::PairA => ("fixture-pair-a-account", "fixture-pair-a-password"),
+            Self::PairB => ("fixture-pair-b-account", "fixture-pair-b-password"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CredentialFileKind {
     Account,
     Password,
@@ -216,6 +239,26 @@ impl ClientConfig {
                 secret_root.join("fixture-account"),
                 secret_root.join("fixture-password"),
             ),
+        })
+    }
+
+    /// Build the accepted local Reference Realm configuration for one closed Fixture Pair profile.
+    pub fn reference_realm_fixture_profile(
+        repository_root: impl AsRef<Path>,
+        profile: FixtureProfile,
+    ) -> Result<Self, ConfigError> {
+        let secret_root = repository_root.as_ref().join("infra/azerothcore/secrets");
+        let (account, password) = profile.credential_stems();
+        Self::new(ClientConfigSpec {
+            realm_id: 1,
+            realm_name: "Miazcore Reference Realm".to_owned(),
+            character_name: profile.character_name().to_owned(),
+            client_build: TARGET_CLIENT_BUILD,
+            login_endpoint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3724),
+            world_endpoint: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8085),
+            connect_timeout: Duration::from_secs(5),
+            io_timeout: Duration::from_secs(5),
+            credentials: CredentialPaths::new(secret_root.join(account), secret_root.join(password)),
         })
     }
 
