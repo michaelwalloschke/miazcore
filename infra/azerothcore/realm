@@ -113,7 +113,17 @@ case "${1:-}" in
         if [[ "${MIAZCORE_SKIP_PULL:-0}" != 1 ]]; then
             "${compose[@]}" pull
         fi
-        "${compose[@]}" up --detach --wait --wait-timeout 900
+        # The import and fixture provisioner are expected one-shot services.
+        # Recent Compose versions can return non-zero from `--wait` when those
+        # services have already exited successfully.  The canonical health
+        # boundary below decides whether the realm is actually usable, so keep
+        # that harmless Compose result from turning a completed reset into a
+        # false failure while still failing closed on an unhealthy realm.
+        compose_wait_status=0
+        "${compose[@]}" up --detach --wait --wait-timeout 900 || compose_wait_status=$?
+        if [[ "$compose_wait_status" != 0 ]]; then
+            echo "compose wait returned $compose_wait_status; verifying canonical realm health after server recreation" >&2
+        fi
         # One-shot import/provision work may recreate or restart MySQL while an
         # existing server container remains up. Always finish with fresh server
         # processes so their pools and realm cache target the current database.
