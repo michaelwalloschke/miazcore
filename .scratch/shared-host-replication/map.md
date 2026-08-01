@@ -46,6 +46,7 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Dual-window Diagnostic World experience](research/07-dual-window-diagnostic-experience.md): two independent viewport-first windows make one Local Character and one Remote Avatar Marker unmistakable through separate primitive shapes, GUID shorthand, observed-versus-rendered remote pose rows, lifecycle events, and a redacted fault state.
 - [Remote Avatar fault boundary](research/08-remote-avatar-fault-boundary.md): encrypted-frame or unwalkable-container integrity failures fail the whole World session; after intact framing, unusable accepted-avatar data removes only its marker with a redacted diagnostic, while valid out-of-scope data is fully consumed and ignored.
 - [Dual-Client Orchestrator](research/10-dual-client-orchestrator.md): one foreground repository parent owns the canonical Realm lock, starts exact Pair A/B child processes, coordinates only serial sidecar-driven role turns, and either completes after final health or retains a visible same-owner recovery failure.
+- [Paired Fixture reset task](research/12-paired-fixture-reset-task.md): reviewed Pair Pdump provenance and one lock-held reset establish exactly the three fixtures, while a separate Placement Probe verifies Pair A/B readiness and placement without claiming Remote Avatar replication.
 
 ## Not yet specified
 
