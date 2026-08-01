@@ -1,7 +1,7 @@
 # Implement Fixture Pair reset and profiles
 
 Type: implementation
-Status: claimed
+Status: resolved
 Blocked by: [Design the paired Fixture reset task](12-design-paired-fixture-reset-task.md), [Decide the Fixture Profile and secret contract](05-decide-fixture-profile-and-secret-contract.md)
 
 ## Objective
@@ -46,6 +46,16 @@ paired reset health, and a lock-held Placement Probe.
 - Redacted reset and Placement-Probe artifacts bound to the implementation
   commit, plus final canonical Realm health.
 
+## Answer
+
+Canonical reset now provisions and health-checks the three offline fixtures
+with provenance-checked Pair Pdump inputs and owner-only private credentials.
+Closed Pair A/B profiles reach `MovementReady` behind a peer-ready barrier, so
+the live probe proves overlapping retained sessions before either client may
+publish its redacted ready record. The probe has bounded child reaping,
+preflight-before-mutation, a single recovery path, and a final-health-bound
+summary.
+
 ## Comments
 
 - 2026-08-01: Claimed. Pair Pdump generation remains provenance-gated; reset
@@ -54,3 +64,10 @@ paired reset health, and a lock-held Placement Probe.
   Client configuration adapter. Canonical reset-owned Pair provisioning,
   health, lock/recovery semantics, and the Placement Probe remain open work;
   Pair Pdump generation/review is their explicit human checkpoint.
+- 2026-08-02: Resolved. Implementation commit `660fce8dc0276326598573da20fdb5b214b6a480`; redacted live evidence is
+  `artifacts/shared-host-replication/20260801T222218Z-placement-probe/summary.json`
+  (two distinct GUIDs, 3.0 m east relation, final health; peer-release is
+  validated before this sanitized summary is written).
+  `./infra/azerothcore/realm health` and `scripts/check.sh` passed after the
+  run; the latter includes behavioral lock, failure/recovery, cleanup and
+  secret-safety coverage.
