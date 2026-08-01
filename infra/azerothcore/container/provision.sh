@@ -82,9 +82,14 @@ run_worldserver() {
 }
 
 if [[ "$mode" == export ]]; then
-    fixture="${MIAZCORE_EXPORT_FILENAME:-reference-character.pdump}"
+    case "${MIAZCORE_EXPORT_PROFILE:-reference}" in
+        reference) fixture=reference-character.pdump; export_character=Miaztest ;;
+        pair-a) fixture=reference-pair-a-character.pdump; export_character=Miazpaira ;;
+        pair-b) fixture=reference-pair-b-character.pdump; export_character=Miazpairb ;;
+        *) echo "fixture: unsupported export profile" >&2; exit 64 ;;
+    esac
     [[ "$fixture" != */* && "$fixture" != *\\* ]] || { echo "fixture: PDump.NoPaths requires an export basename" >&2; exit 64; }
-    printf 'pdump write %s %s\nserver shutdown 1\n' "$fixture" "${MIAZCORE_EXPORT_CHARACTER:-Miaztest}" >"$command_file"
+    printf 'pdump write %s %s\nserver shutdown 1\n' "$fixture" "$export_character" >"$command_file"
     run_worldserver
     fixture_size="$(stat --format=%s "$fixture" 2>/dev/null || printf 0)"
     (( fixture_size > 1024 )) || { echo "fixture: pdump export was not created or is implausibly small" >&2; exit 65; }
