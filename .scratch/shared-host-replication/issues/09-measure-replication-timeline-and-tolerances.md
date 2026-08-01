@@ -1,7 +1,7 @@
 # Measure replication timeline and tolerances
 
 Type: wayfinder:research
-Status: resolved
+Status: claimed
 Blocked by: [Design Fixture Pair provisioning](02-design-fixture-pair-provisioning.md), [Trace the remote-player World-Update boundary](03-trace-remote-player-world-update-boundary.md)
 
 ## Question
@@ -16,14 +16,10 @@ Establish evidence-backed deadlines and settle where smoothing snaps. Do not
 borrow thresholds from wall-clock intuition or turn this into a latency or
 performance benchmark.
 
-## Answer
-
-[Replication timeline and tolerances](../research/09-replication-timeline-and-tolerances.md)
-records the redacted local measurement and establishes bounded lifecycle,
-movement-cadence, final-pose-comparison, and Remote Pose Projection limits.
-
 ## Comments
 
-- 2026-08-01: A reset-scoped loopback run observed a 3.835 m move, exact
-  stopped Submitted/remote-stop equality, and remote Destroy 19.830 s after
-  proof start; the resulting local limits fail closed rather than infer state.
+- 2026-08-01: Initial temporary-peer trace is not accepted as Ticket 09
+  evidence. Its observer transcript and controller used independent monotonic
+  origins, it did not use reset-owned Fixture Pair A/B profiles, and its
+  create-pose validator matched the wrong semantic event name. The ticket
+  remains claimed until a shared-clock, Fixture-Pair measurement is available.

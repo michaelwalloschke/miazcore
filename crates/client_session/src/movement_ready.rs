@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 use crate::{
     ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
@@ -137,11 +137,13 @@ impl LiveDiagnosticSession {
     pub fn start_with_remote_trace(
         loaded: LoadedClientConfig,
         remote_trace_output: PathBuf,
+        remote_trace_started_at: Instant,
     ) -> Result<Self, BoundaryError> {
         HeadlessSession::start_with_remote_trace(
             loaded,
             WorkerTarget::LiveDiagnostic,
             remote_trace_output,
+            remote_trace_started_at,
         )
         .map(Self)
     }

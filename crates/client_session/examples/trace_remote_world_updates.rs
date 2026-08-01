@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let primary = LiveDiagnosticSession::start_with_remote_trace(
         primary_config.load()?,
         transcript_file.clone(),
+        started_at,
     )?;
     primary.send_control(ControlCommand::StartEntry)?;
     let primary_snapshot = wait_for_ready(&primary, "observer")?;

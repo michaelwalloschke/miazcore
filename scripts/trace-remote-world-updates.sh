@@ -103,7 +103,7 @@ if not movement_opcodes or not movement_opcodes <= allowed_movement_opcodes:
         + ", ".join(sorted(str(opcode) for opcode in movement_opcodes))
     )
 for event in peer:
-    if event.get("kind") in {"create", "movement"}:
+    if event.get("kind") in {"create-object2", "movement"}:
         if event.get("map_id") != result["map_id"]:
             raise SystemExit("remote trace map identity drifted")
         if not all(isinstance(event.get(key), (int, float)) for key in ("east", "north", "elevation", "orientation")):

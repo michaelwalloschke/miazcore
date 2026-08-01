@@ -1,4 +1,4 @@
-use std::{path::PathBuf, thread::JoinHandle};
+use std::{path::PathBuf, thread::JoinHandle, time::Instant};
 
 use crate::{
     ClientEvent, ClientSnapshot, ControlCommand, LoadedClientConfig, MovementIntent,
@@ -47,15 +47,21 @@ impl HeadlessSession {
         loaded: LoadedClientConfig,
         target: WorkerTarget,
         remote_trace_output: PathBuf,
+        remote_trace_started_at: Instant,
     ) -> Result<Self, BoundaryError> {
-        Self::start_with_outputs(loaded, target, None, Some(remote_trace_output))
+        Self::start_with_outputs(
+            loaded,
+            target,
+            None,
+            Some((remote_trace_output, remote_trace_started_at)),
+        )
     }
 
     fn start_with_outputs(
         loaded: LoadedClientConfig,
         target: WorkerTarget,
         proof_stage_output: Option<PathBuf>,
-        remote_trace_output: Option<PathBuf>,
+        remote_trace_output: Option<(PathBuf, Instant)>,
     ) -> Result<Self, BoundaryError> {
         let identity = loaded.config().identity().clone();
         let (client, boundary) = if proof_stage_output.is_some() {
@@ -64,11 +70,12 @@ impl HeadlessSession {
             new_boundary(identity)?
         };
         let worker = match remote_trace_output {
-            Some(output) => runtime::spawn_production_worker_with_remote_trace(
+            Some((output, started_at)) => runtime::spawn_production_worker_with_remote_trace(
                 loaded,
                 boundary,
                 target,
                 Some(output),
+                Some(started_at),
             )?,
             None => runtime::spawn_production_worker(loaded, boundary, target)?,
         };

@@ -158,10 +158,10 @@ struct RemoteTranscriptEvent {
 }
 
 impl RemoteTranscript {
-    fn new(output: PathBuf) -> Self {
+    fn new(output: PathBuf, started_at: Instant) -> Self {
         Self {
             output,
-            started_at: Instant::now(),
+            started_at,
             remote_guid: None,
             events: Vec::new(),
         }
@@ -288,7 +288,7 @@ pub(crate) fn spawn_production_worker(
     boundary: WorkerBoundary,
     target: WorkerTarget,
 ) -> Result<JoinHandle<()>, BoundaryError> {
-    spawn_production_worker_with_remote_trace(loaded, boundary, target, None)
+    spawn_production_worker_with_remote_trace(loaded, boundary, target, None, None)
 }
 
 pub(crate) fn spawn_production_worker_with_remote_trace(
@@ -296,13 +296,16 @@ pub(crate) fn spawn_production_worker_with_remote_trace(
     mut boundary: WorkerBoundary,
     target: WorkerTarget,
     remote_trace_output: Option<PathBuf>,
+    remote_trace_started_at: Option<Instant>,
 ) -> Result<JoinHandle<()>, BoundaryError> {
     thread::Builder::new()
         .name("miazcore-entry-worker".to_owned())
         .spawn(move || {
             let (config, mut credentials) = loaded.into_parts();
             credentials.normalize_for_login();
-            let mut trace = remote_trace_output.map(RemoteTranscript::new);
+            let mut trace = remote_trace_output.map(|output| {
+                RemoteTranscript::new(output, remote_trace_started_at.unwrap_or_else(Instant::now))
+            });
             run_worker_loop_for_with_remote_trace(
                 &config,
                 &credentials,
@@ -2415,7 +2418,7 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use crate::{
@@ -2455,7 +2458,7 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
-        let mut transcript = RemoteTranscript::new(path.clone());
+        let mut transcript = RemoteTranscript::new(path.clone(), Instant::now());
         transcript.push(
             "create",
             0x0100_0000_0000_0002,
@@ -2486,7 +2489,7 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
-        let mut transcript = RemoteTranscript::new(path);
+        let mut transcript = RemoteTranscript::new(path, Instant::now());
         transcript.remote_guid = Some(0x0100_0000_0000_0002);
 
         transcript.observe(SMSG_UPDATE_OBJECT, &[0], 0);
