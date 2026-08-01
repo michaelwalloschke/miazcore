@@ -34,6 +34,11 @@ RemoteAvatarRemovalSource
   DestroyObject
   OutOfRange
 
+RemoteAvatarFaultCategory
+  InvalidPose
+  UnsupportedMovement
+  InconsistentLifecycle
+
 RemoteAvatarEvent
   { sequence, change }
 
@@ -41,6 +46,7 @@ RemoteAvatarChange
   Created { id, realm_observed_pose }
   Updated { id, realm_observed_pose }
   Removed { id, source: RemoteAvatarRemovalSource }
+  Faulted { id, category: RemoteAvatarFaultCategory }
 ```
 
 `ClientSnapshot` later contains `remote_avatar: Option<RemoteAvatarSnapshot>`.
@@ -54,6 +60,10 @@ cipher, or transport handle.
 Create initializes both the Snapshot's identity and its Realm-observed Pose.
 Update replaces only the raw Realm-observed Pose for the same ID. Destroy or a
 matching out-of-range observation removes the Snapshot and emits `Removed`.
+After frame and container integrity have been established, a semantically
+unusable record for the accepted ID instead clears the Snapshot and emits the
+lossless `Faulted` event with a redacted category. `Faulted` is distinct from
+an ordinary Realm removal and is defined by Ticket 08.
 An update before Create, an update for another GUID, and a removal for an
 absent GUID cannot create, merge, or relabel a Remote Avatar. The precise
 redacted diagnostic and marker-fault outcome for unusable records is owned by
