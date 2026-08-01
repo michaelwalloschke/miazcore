@@ -22,7 +22,11 @@ from pathlib import Path
 AUTH_HOST = "127.0.0.1"
 AUTH_PORT = 3724
 BUILD = 12340
-CHARACTER_NAME = "Miaztest"
+PROFILES = {
+    "reference": ("fixture-account", "fixture-password", "Miaztest"),
+    "pair-a": ("fixture-pair-a-account", "fixture-pair-a-password", "Miazpaira"),
+    "pair-b": ("fixture-pair-b-account", "fixture-pair-b-password", "Miazpairb"),
+}
 
 SMSG_AUTH_CHALLENGE = 0x1EC
 CMSG_AUTH_SESSION = 0x1ED
@@ -246,7 +250,7 @@ class WorldConnection:
         self.sock.sendall(header + payload)
 
 
-def verify_world_character(session: Session, create: bool) -> None:
+def verify_world_character(session: Session, create: bool, character_name: str) -> None:
     host, port_text = session.realm_address.rsplit(":", 1)
     with socket.create_connection((host, int(port_text)), timeout=10) as sock:
         sock.settimeout(20)
@@ -285,7 +289,7 @@ def verify_world_character(session: Session, create: bool) -> None:
                 break
 
         if create:
-            character_payload = CHARACTER_NAME.encode("ascii") + b"\x00" + bytes(
+            character_payload = character_name.encode("ascii") + b"\x00" + bytes(
                 (1, 1, 0, 0, 0, 0, 0, 0, 0)
             )
             world.send(CMSG_CHAR_CREATE, character_payload)
@@ -294,7 +298,7 @@ def verify_world_character(session: Session, create: bool) -> None:
                 if opcode == SMSG_CHAR_CREATE:
                     if payload != b"\x2f":
                         fail(f"character creation failed with response {payload.hex()}")
-                    print("protocol smoke: server generated Miaztest (response=0x2f)")
+                    print("protocol smoke: server generated fixture character (response=0x2f)")
                     break
 
         world.send(CMSG_CHAR_ENUM)
@@ -303,24 +307,35 @@ def verify_world_character(session: Session, create: bool) -> None:
             if opcode == SMSG_CHAR_ENUM:
                 if not payload or payload[0] != 1:
                     fail(f"expected exactly one fixture character, got {payload[0] if payload else 'empty'}")
-                if CHARACTER_NAME.encode("ascii") + b"\x00" not in payload:
-                    fail("character enumeration did not contain Miaztest")
-                print("protocol smoke: authenticated world session enumerated exactly one Miaztest")
+                if character_name.encode("ascii") + b"\x00" not in payload:
+                    fail("character enumeration did not contain the expected fixture")
+                print("protocol smoke: authenticated world session enumerated exactly one fixture")
                 return
 
 
 def main() -> int:
-    args = set(sys.argv[1:])
-    if args - {"--create"}:
-        fail("usage: bootstrap_character.py [--create]")
+    args = sys.argv[1:]
+    create = False
+    profile = "reference"
+    while args:
+        argument = args.pop(0)
+        if argument == "--create" and not create:
+            create = True
+        elif argument == "--profile" and args:
+            profile = args.pop(0)
+        else:
+            fail("usage: bootstrap_character.py [--create] [--profile reference|pair-a|pair-b]")
+    if profile not in PROFILES:
+        fail("unsupported fixture profile")
     base = Path(__file__).resolve().parent.parent
-    account = (base / "secrets/fixture-account").read_text(encoding="ascii").strip()
-    password = (base / "secrets/fixture-password").read_text(encoding="ascii").strip()
+    account_file, password_file, character_name = PROFILES[profile]
+    account = (base / "secrets" / account_file).read_text(encoding="ascii").strip()
+    password = (base / "secrets" / password_file).read_text(encoding="ascii").strip()
     if not (account and password):
         fail("fixture credential files are empty")
     session = login(account, password)
     print(f"protocol smoke: authenticated build {BUILD}; realm {session.realm_id} at {session.realm_address}")
-    verify_world_character(session, create="--create" in args)
+    verify_world_character(session, create=create, character_name=character_name)
     return 0
 
 
