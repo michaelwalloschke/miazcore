@@ -11,5 +11,6 @@ cargo test --locked --workspace
 cargo metadata --locked --no-deps --format-version 1 | scripts/check_dependency_boundaries.py
 scripts/test-acceptance-evidence.sh
 bash -n infra/azerothcore/realm scripts/placement-probe.sh
+scripts/test-placement-probe-contract.sh
 CC_x86_64_pc_windows_msvc=clang \
   cargo check --locked --workspace --all-targets --target x86_64-pc-windows-msvc

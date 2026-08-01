@@ -20,14 +20,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         MovementReadySession::start(fixture_profile::configuration(root, profile)?.load()?)?;
     session.send_control(ControlCommand::StartEntry)?;
     let deadline = Instant::now() + Duration::from_secs(45);
+    let mut reached_movement_ready = false;
     loop {
         let snapshot = session.snapshot();
-        if snapshot.entry_anchor.is_some()
-            && snapshot.run_speed.is_some()
-            && matches!(
-                snapshot.phase,
-                ClientPhase::MovementReady | ClientPhase::Offline
-            )
+        reached_movement_ready |= snapshot.phase == ClientPhase::MovementReady;
+        if snapshot.entry_anchor.is_some() && snapshot.run_speed.is_some() && reached_movement_ready
         {
             let character = snapshot
                 .selected_character
