@@ -10,7 +10,11 @@ if [[ -f "$base_dir/.env" ]]; then
     source "$base_dir/.env"
     set +a
 fi
-project="${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}"
+[[ -z "${MIAZCORE_COMPOSE_PROJECT+x}" && -z "${MIAZCORE_REALM_ADDRESS+x}" ]] || {
+    echo "canonical Reference Realm does not accept project or endpoint overrides" >&2
+    exit 64
+}
+project="miazcore-reference-realm"
 compose+=(--project-name "$project")
 lock_dir="$(cd -- "$base_dir/../.." && pwd)/.scratch/learning-client/.realm-test.lock"
 lock_owned=false
@@ -32,14 +36,24 @@ release_reset_lock() {
 }
 
 usage() {
-    echo "usage: $0 {init-secrets|up|down|health|wait-character-offline|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
+    echo "usage: $0 {init-secrets|preflight|up|down|health|wait-character-offline|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
     exit 64
 }
 
 require_secrets() {
-    local name
+    local name path mode owner
     for name in database-password database-root-password fixture-account fixture-password fixture-pair-a-account fixture-pair-a-password fixture-pair-b-account fixture-pair-b-password; do
-        [[ -s "$base_dir/secrets/$name" ]] || { echo "missing $base_dir/secrets/$name; run '$0 init-secrets'" >&2; exit 64; }
+        path="$base_dir/secrets/$name"
+        [[ -s "$path" && -f "$path" && ! -L "$path" ]] || {
+            echo "missing or unsafe secret file: $path; run '$0 init-secrets'" >&2
+            exit 64
+        }
+        mode="$(stat -f '%OLp' "$path" 2>/dev/null || stat -c '%a' "$path")"
+        owner="$(stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path")"
+        [[ "$mode" == 600 && "$owner" == "$UID" ]] || {
+            echo "secret file must be current-user owned mode 0600: $path" >&2
+            exit 64
+        }
     done
 }
 
@@ -109,10 +123,16 @@ reset() {
     fi
 }
 
+preflight() {
+    require_secrets
+    validate_pair_pdumps
+}
+
 case "${1:-}" in
     init-secrets) init_secrets ;;
+    preflight) preflight ;;
     up)
-        require_secrets
+        preflight
         "${compose[@]}" config --quiet
         if [[ "${MIAZCORE_SKIP_PULL:-0}" != 1 ]]; then
             "${compose[@]}" pull
@@ -157,7 +177,7 @@ with socket.create_connection(("127.0.0.1", port), timeout):
     print(f"host socket: 127.0.0.1:{port} reachable")
 PY
         done
-        "${compose[@]}" exec -T --env "MIAZCORE_EXPECTED_REALM_ADDRESS=${MIAZCORE_REALM_ADDRESS:-127.0.0.1}" database bash -ceu '
+        "${compose[@]}" exec -T --env "MIAZCORE_EXPECTED_REALM_ADDRESS=127.0.0.1" database bash -ceu '
           export MYSQL_PWD="$(cat /run/secrets/database_root_password)"
           mysql_base=(mysql --user=root --batch --skip-column-names)
           realm_count="$("${mysql_base[@]}" acore_auth --execute="

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+root="${MIAZCORE_PLACEMENT_PROBE_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 lock="$root/.scratch/learning-client/.realm-test.lock"
 started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-placement-probe"
 run="$root/artifacts/shared-host-replication/$run_id"
-commit="$(git -C "$root" rev-parse HEAD)"
+commit="${MIAZCORE_PLACEMENT_PROBE_COMMIT:-$(git -C "$root" rev-parse HEAD)}"
 temporary_logs="$(mktemp -d "${TMPDIR:-/tmp}/miazcore-placement-probe.XXXXXX")"
 mutation_attempted=false
 recovery_attempted=false
@@ -37,18 +37,33 @@ recover_once() {
 }
 
 reap_children() {
-    local child reaped=true
+    local child deadline unreaped=false any_live
     for child in "$a" "$b"; do
         [[ -n "$child" ]] || continue
         kill -TERM "$child" 2>/dev/null || true
     done
+    deadline=$((SECONDS + 5))
+    while (( SECONDS < deadline )); do
+        any_live=false
+        for child in "$a" "$b"; do
+            [[ -z "$child" ]] || ! kill -0 "$child" 2>/dev/null || any_live=true
+        done
+        [[ "$any_live" == true ]] || break
+        sleep 0.1
+    done
+    for child in "$a" "$b"; do
+        [[ -z "$child" ]] || ! kill -0 "$child" 2>/dev/null || kill -KILL "$child" 2>/dev/null || true
+    done
     for child in "$a" "$b"; do
         [[ -n "$child" ]] || continue
-        wait "$child" 2>/dev/null || reaped=false
+        if kill -0 "$child" 2>/dev/null; then
+            unreaped=true
+        fi
+        wait "$child" 2>/dev/null || true
     done
     a=""
     b=""
-    "$reaped"
+    [[ "$unreaped" == false ]]
 }
 
 canonical_reset() {
@@ -85,13 +100,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir -p "$run"
 cd "$root"
+stage="preflight"
+./infra/azerothcore/realm preflight
 mutation_attempted=true
 canonical_reset "$temporary_logs/initial-reset.marker"
 stage="build-pair-client"
 cargo build --locked -q -p learning_client --example fixture_pair_ready
 stage="pair-movement-ready"
-target/debug/examples/fixture_pair_ready pair-a >"$temporary_logs/pair-a" 2>&1 & a=$!
-target/debug/examples/fixture_pair_ready pair-b >"$temporary_logs/pair-b" 2>&1 & b=$!
+mkdir -p "$temporary_logs/ready-barrier"
+MIAZCORE_PAIR_READY_DIR="$temporary_logs/ready-barrier" target/debug/examples/fixture_pair_ready pair-a >"$temporary_logs/pair-a" 2>&1 & a=$!
+MIAZCORE_PAIR_READY_DIR="$temporary_logs/ready-barrier" target/debug/examples/fixture_pair_ready pair-b >"$temporary_logs/pair-b" 2>&1 & b=$!
 failed=false
 wait "$a" || failed=true
 wait "$b" || failed=true
@@ -103,7 +121,7 @@ python3 - "$run" "$temporary_logs" "$commit" <<'PY'
 import json, pathlib, re, sys
 p=pathlib.Path(sys.argv[1]); logs=pathlib.Path(sys.argv[2]); commit=sys.argv[3]; rows=[]
 for token in ('pair-a','pair-b'):
- m=re.fullmatch(r'PAIR_READY profile=(pair-[ab]) guid=0x([0-9a-f]+) map=(\d+) east=(-?\d+\.\d+) north=(-?\d+\.\d+) elevation=(-?\d+\.\d+) orientation=(-?\d+\.\d+)\n?',(logs/token).read_text())
+ m=re.fullmatch(r'PAIR_READY profile=(pair-[ab]) guid=0x([0-9a-f]+) map=(\d+) east=(-?\d+\.\d+) north=(-?\d+\.\d+) elevation=(-?\d+\.\d+) orientation=(-?\d+\.\d+) overlap=peer-release\n?',(logs/token).read_text())
  if not m: raise SystemExit('Placement Probe failed: malformed ready evidence')
  q=m.groups(); rows.append({'profile':q[0],'guid':f'0x{q[1][-8:]}','map':int(q[2]),'east':float(q[3]),'north':float(q[4]),'elevation':float(q[5]),'orientation':float(q[6])})
 a,b=rows

@@ -1,6 +1,7 @@
 use std::{
     error::Error,
-    io,
+    fs, io,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -16,6 +17,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => return Err(io::Error::other("usage: fixture_pair_ready {pair-a|pair-b}").into()),
     };
     let root = std::env::current_dir()?;
+    let peer_ready_dir = std::env::var_os("MIAZCORE_PAIR_READY_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("missing pair ready barrier"))?;
+    let profile_token = if profile == FixtureProfile::PairA {
+        "pair-a"
+    } else {
+        "pair-b"
+    };
+    let peer_token = if profile == FixtureProfile::PairA {
+        "pair-b"
+    } else {
+        "pair-a"
+    };
+    if !peer_ready_dir.is_dir() {
+        return Err(io::Error::other("pair ready barrier is not a directory").into());
+    }
     let session =
         MovementReadySession::start(fixture_profile::configuration(root, profile)?.load()?)?;
     session.send_control(ControlCommand::StartEntry)?;
@@ -44,13 +61,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             if character.name() != profile.character_name() || character.guid() == 0 {
                 return Err(io::Error::other("profile identity mismatch").into());
             }
+            fs::write(
+                peer_ready_dir.join(format!("{profile_token}.ready")),
+                "movement-ready\n",
+            )?;
+            while !peer_ready_dir.join(format!("{peer_token}.ready")).is_file() {
+                if Instant::now() >= deadline {
+                    session.shutdown()?;
+                    return Err(io::Error::other("peer did not reach MovementReady").into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             println!(
-                "PAIR_READY profile={} guid={:#x} map={} east={:.3} north={:.3} elevation={:.3} orientation={:.3}",
-                if profile == FixtureProfile::PairA {
-                    "pair-a"
-                } else {
-                    "pair-b"
-                },
+                "PAIR_READY profile={} guid={:#x} map={} east={:.3} north={:.3} elevation={:.3} orientation={:.3} overlap=peer-release",
+                profile_token,
                 character.guid(),
                 anchor.map_id,
                 anchor.east,
