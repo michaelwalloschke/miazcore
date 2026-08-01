@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-./infra/azerothcore/realm reset-state --yes
+MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
 ./infra/azerothcore/realm health
 
 scripts/macos-compositor-proof.sh "$miazcore_image" --live-movement-external-proof-output "$miazcore_log"

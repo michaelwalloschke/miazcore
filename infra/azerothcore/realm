@@ -12,6 +12,24 @@ if [[ -f "$base_dir/.env" ]]; then
 fi
 project="${MIAZCORE_COMPOSE_PROJECT:-miazcore-reference-realm}"
 compose+=(--project-name "$project")
+lock_dir="$(cd -- "$base_dir/../.." && pwd)/.scratch/learning-client/.realm-test.lock"
+lock_owned=false
+
+acquire_reset_lock() {
+    [[ "${MIAZCORE_REALM_LOCK_HELD:-0}" == 1 ]] && return
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "Reference Realm reset is already owned by another process" >&2
+        exit 75
+    fi
+    printf 'script=infra/azerothcore/realm\npid=%s\nstarted_utc=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock_dir/owner"
+    lock_owned=true
+}
+
+release_reset_lock() {
+    [[ "$lock_owned" == true ]] || return
+    rm -f "$lock_dir/owner"
+    rmdir "$lock_dir"
+}
 
 usage() {
     echo "usage: $0 {init-secrets|up|down|health|wait-character-offline|smoke|reset-state|reset-all|stop-worldserver|start-worldserver} [--yes]" >&2
@@ -182,7 +200,15 @@ PY
         require_secrets
         "$base_dir/tools/bootstrap_character.py"
         ;;
-    reset-state) reset false "${2:-}" ;;
-    reset-all) reset true "${2:-}" ;;
+    reset-state)
+        acquire_reset_lock
+        trap release_reset_lock EXIT INT TERM
+        reset false "${2:-}"
+        ;;
+    reset-all)
+        acquire_reset_lock
+        trap release_reset_lock EXIT INT TERM
+        reset true "${2:-}"
+        ;;
     *) usage ;;
 esac

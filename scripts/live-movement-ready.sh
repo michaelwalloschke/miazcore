@@ -14,7 +14,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$miazcore_root"
-./infra/azerothcore/realm reset-state --yes
+MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
 ./infra/azerothcore/realm health
 cargo run --locked -p client_session --example reach_movement_ready
 ./infra/azerothcore/realm health

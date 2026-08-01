@@ -21,7 +21,7 @@ mkdir -p "$miazcore_output_dir"
 rm -f "$miazcore_image" "$miazcore_sidecar" "$miazcore_log" "${miazcore_image%.*}.ready"
 
 cd "$miazcore_root"
-./infra/azerothcore/realm reset-state --yes
+MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
 ./infra/azerothcore/realm health
 scripts/macos-compositor-proof.sh "$miazcore_image" --live-external-proof-output "$miazcore_log"
 

@@ -44,7 +44,7 @@ wait_for_realm_health() {
 
 short_image="artifacts/persisted-movement-short-negative.png"
 short_log="artifacts/persisted-movement-short-negative.log"
-./infra/azerothcore/realm reset-state --yes
+MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
 wait_for_realm_health
 scripts/macos-compositor-proof.sh "$short_image" \
     --persisted-movement-short-negative-external-proof-output "$short_log"

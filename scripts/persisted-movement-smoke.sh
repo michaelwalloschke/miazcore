@@ -16,7 +16,7 @@ fi
 cleanup() { rmdir "$miazcore_lock_dir"; }
 trap cleanup EXIT INT TERM
 
-./infra/azerothcore/realm reset-state --yes
+MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
 ./infra/azerothcore/realm health
 scripts/macos-compositor-proof.sh "$miazcore_image" --persisted-movement-external-proof-output "$miazcore_log"
 rg -q 'AdapterInfo .*backend: Metal' "$miazcore_log"
