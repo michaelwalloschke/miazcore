@@ -51,6 +51,16 @@ reap_children() {
     "$reaped"
 }
 
+canonical_reset() {
+    local marker="$1"
+    unlink "$marker" 2>/dev/null || true
+    if ! MIAZCORE_SKIP_PULL=1 MIAZCORE_REALM_LOCK_HELD=1 \
+        MIAZCORE_RESET_COMPLETION_FILE="$marker" ./infra/azerothcore/realm reset-state --yes; then
+        [[ "$(cat "$marker" 2>/dev/null || true)" == reset-complete ]] || return 1
+        echo "reset command returned non-zero after canonical completion marker" >&2
+    fi
+}
+
 cleanup() {
     local status=$?
     trap - EXIT INT TERM
@@ -76,7 +86,7 @@ trap 'exit 143' TERM
 mkdir -p "$run"
 cd "$root"
 mutation_attempted=true
-MIAZCORE_SKIP_PULL=1 MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
+canonical_reset "$temporary_logs/initial-reset.marker"
 stage="build-pair-client"
 cargo build --locked -q -p learning_client --example fixture_pair_ready
 stage="pair-movement-ready"
@@ -103,7 +113,7 @@ PY
 stage="logout-settlement"
 ./infra/azerothcore/realm wait-character-offline
 stage="final-reset"
-MIAZCORE_SKIP_PULL=1 MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes
+canonical_reset "$temporary_logs/final-reset.marker"
 stage="final-health"
 ./infra/azerothcore/realm health
 python3 - "$run" "$commit" <<'PY'

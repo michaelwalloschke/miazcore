@@ -103,6 +103,10 @@ reset() {
         docker volume rm "$data_volume"
     fi
     "$0" up
+    if [[ -n "${MIAZCORE_RESET_COMPLETION_FILE:-}" ]]; then
+        umask 077
+        printf 'reset-complete\n' >"$MIAZCORE_RESET_COMPLETION_FILE"
+    fi
 }
 
 case "${1:-}" in

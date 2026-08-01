@@ -14,12 +14,13 @@ require() {
     }
 }
 
-# Fail closed: reset commands are not wrapped in a health-only success fallback.
-require 'MIAZCORE_SKIP_PULL=1 MIAZCORE_REALM_LOCK_HELD=1 ./infra/azerothcore/realm reset-state --yes' "$probe"
-if rg -q 'canonical_reset|reset command returned non-zero' "$probe"; then
-    echo 'Placement Probe accepted a failed reset through health fallback' >&2
-    exit 1
-fi
+# Fail closed: a reset status is tolerated only with a fresh completion marker
+# written by `realm` after its own final health boundary.
+require 'canonical_reset()' "$probe"
+require 'MIAZCORE_RESET_COMPLETION_FILE="$marker"' "$probe"
+require '== reset-complete' "$probe"
+require 'MIAZCORE_RESET_COMPLETION_FILE' "$realm"
+require "printf 'reset-complete" "$realm"
 
 # Lock ownership, child reaping, and one retained-lock recovery are all explicit.
 require 'started_utc=' "$probe"
