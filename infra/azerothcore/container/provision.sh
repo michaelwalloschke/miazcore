@@ -13,7 +13,13 @@ read_secret() {
 db_password="$(read_secret /run/secrets/database_password)"
 account="$(read_secret /run/secrets/fixture_account)"
 account_password="$(read_secret /run/secrets/fixture_password)"
-(( ${#account_password} <= 16 )) || { echo "fixture: account password exceeds the build-12340 16-character limit" >&2; exit 64; }
+pair_a_account="$(read_secret /run/secrets/fixture_pair_a_account)"
+pair_a_password="$(read_secret /run/secrets/fixture_pair_a_password)"
+pair_b_account="$(read_secret /run/secrets/fixture_pair_b_account)"
+pair_b_password="$(read_secret /run/secrets/fixture_pair_b_password)"
+for password in "$account_password" "$pair_a_password" "$pair_b_password"; do
+    (( ${#password} <= 16 )) || { echo "fixture: account password exceeds the build-12340 16-character limit" >&2; exit 64; }
+done
 mysql_defaults=/run/miazcore/mysql.cnf
 mkdir -p /run/miazcore
 chmod 700 /run/miazcore
@@ -46,12 +52,21 @@ ON DUPLICATE KEY UPDATE
 SQL
 
 mode="${1:-provision}"
-fixture=/miazcore/fixtures/reference-character.pdump
+fixtures=(
+    /miazcore/fixtures/reference-character.pdump
+    /miazcore/fixtures/reference-pair-a-character.pdump
+    /miazcore/fixtures/reference-pair-b-character.pdump
+)
+accounts=("$account" "$pair_a_account" "$pair_b_account")
+passwords=("$account_password" "$pair_a_password" "$pair_b_password")
+characters=(Miaztest Miazpaira Miazpairb)
 command_file=/run/miazcore/worldserver.commands
 sanitize_output() {
     local line
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line//$account_password/[REDACTED]}"
+        for password in "${passwords[@]}"; do
+            line="${line//$password/[REDACTED]}"
+        done
         printf '%s\n' "$line"
     done
 }
@@ -69,7 +84,7 @@ run_worldserver() {
 if [[ "$mode" == export ]]; then
     fixture="${MIAZCORE_EXPORT_FILENAME:-reference-character.pdump}"
     [[ "$fixture" != */* && "$fixture" != *\\* ]] || { echo "fixture: PDump.NoPaths requires an export basename" >&2; exit 64; }
-    printf 'pdump write %s Miaztest\nserver shutdown 1\n' "$fixture" >"$command_file"
+    printf 'pdump write %s %s\nserver shutdown 1\n' "$fixture" "${MIAZCORE_EXPORT_CHARACTER:-Miaztest}" >"$command_file"
     run_worldserver
     fixture_size="$(stat --format=%s "$fixture" 2>/dev/null || printf 0)"
     (( fixture_size > 1024 )) || { echo "fixture: pdump export was not created or is implausibly small" >&2; exit 65; }
@@ -79,37 +94,44 @@ if [[ "$mode" == export ]]; then
 fi
 
 [[ "$mode" == provision ]] || { echo "fixture: unsupported mode $mode" >&2; exit 64; }
-if [[ ! -f "$fixture" && "${MIAZCORE_BOOTSTRAP_WITHOUT_FIXTURE:-0}" != 1 ]]; then
-    echo "fixture: reference-character.pdump is missing" >&2
-    exit 66
-fi
+for fixture in "${fixtures[@]}"; do
+    [[ -f "$fixture" ]] || { echo "fixture: required reviewed pdump is missing" >&2; exit 66; }
+done
 
 # A newly created account is not added to the already-running worldserver's
 # account cache. Create it in its own short-lived run, then restart before any
 # command that resolves the account by name.
-account_id="$(mysql_auth --execute="SELECT id FROM account WHERE username=UPPER('$account');")"
-if [[ -z "$account_id" ]]; then
-    printf 'account create %s %s\nserver shutdown 1\n' "$account" "$account_password" >"$command_file"
+account_ids=()
+: >"$command_file"
+for index in "${!accounts[@]}"; do
+    account_id="$(mysql_auth --execute="SELECT id FROM account WHERE username=UPPER('${accounts[index]}');")"
+    if [[ -z "$account_id" ]]; then
+        printf 'account create %s %s\n' "${accounts[index]}" "${passwords[index]}" >>"$command_file"
+    fi
+    account_ids[index]="$account_id"
+done
+if [[ -s "$command_file" ]]; then
+    printf 'server shutdown 1\n' >>"$command_file"
     run_worldserver
-    account_id="$(mysql_auth --execute="SELECT id FROM account WHERE username=UPPER('$account');")"
 fi
-
-[[ "$account_id" =~ ^[0-9]+$ ]] || { echo "fixture: account was not provisioned" >&2; exit 65; }
-mysql_auth --execute="UPDATE account SET expansion=2, locked=0, lock_country='00', totp_secret=NULL WHERE id=$account_id;"
-
-character_count="$(mysql_chars --execute="SELECT COUNT(*) FROM characters WHERE name='Miaztest';")"
-[[ "$character_count" == 0 || "$character_count" == 1 ]] || { echo "fixture: duplicate Miaztest rows" >&2; exit 65; }
-printf 'account set password %s %s %s\naccount set addon %s 2\n' \
-    "$account" "$account_password" "$account_password" "$account" >"$command_file"
-if [[ -f "$fixture" && "$character_count" == 0 ]]; then
-    printf 'pdump load %s %s Miaztest\n' "$fixture" "$account" >>"$command_file"
-fi
+for index in "${!accounts[@]}"; do
+    account_ids[index]="$(mysql_auth --execute="SELECT id FROM account WHERE username=UPPER('${accounts[index]}');")"
+    [[ "${account_ids[index]}" =~ ^[0-9]+$ ]] || { echo "fixture: account was not provisioned" >&2; exit 65; }
+    mysql_auth --execute="UPDATE account SET expansion=2, locked=0, lock_country='00', totp_secret=NULL WHERE id=${account_ids[index]};"
+    character_count="$(mysql_chars --execute="SELECT COUNT(*) FROM characters WHERE name='${characters[index]}';")"
+    [[ "$character_count" == 0 || "$character_count" == 1 ]] || { echo "fixture: duplicate fixture character" >&2; exit 65; }
+    printf 'account set password %s %s %s\naccount set addon %s 2\n' \
+        "${accounts[index]}" "${passwords[index]}" "${passwords[index]}" "${accounts[index]}" >>"$command_file"
+    if [[ "$character_count" == 0 ]]; then
+        printf 'pdump load %s %s %s\n' "${fixtures[index]}" "${accounts[index]}" "${characters[index]}" >>"$command_file"
+    fi
+done
 printf 'server shutdown 1\n' >>"$command_file"
 run_worldserver
-unset account_password
+unset account_password pair_a_password pair_b_password
 
-if [[ -f "$fixture" ]]; then
-    owner="$(mysql_chars --execute="SELECT account FROM characters WHERE name='Miaztest';")"
-    [[ "$owner" == "$account_id" ]] || { echo "fixture: Miaztest is not owned by the fixture account" >&2; exit 65; }
-fi
-echo "fixture: realm and account invariant verified"
+for index in "${!accounts[@]}"; do
+    owner="$(mysql_chars --execute="SELECT account FROM characters WHERE name='${characters[index]}';")"
+    [[ "$owner" == "${account_ids[index]}" ]] || { echo "fixture: character ownership invariant failed" >&2; exit 65; }
+done
+echo "fixture: three-fixture realm and account invariant verified"

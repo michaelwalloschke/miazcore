@@ -13,3 +13,18 @@
 | Ordinary-ground checks | offline; transport GUID and transport coordinates/orientation all zero |
 
 Regeneration starts from an empty character database, brings up the pinned auth/world services with the fixture account, runs `tools/bootstrap_character.py --create`, and exports `Miaztest` through `provision.sh export`. The resulting dump must be copied from the stopped export container, hashed, reviewed for the same invariant, and then proven by `reset-state` before replacing this file. Hand-written character-table SQL is not an accepted generation path.
+
+## Fixture Pair admission
+
+`reference-pair-a-character.pdump` and `reference-pair-b-character.pdump` are
+not interchangeable copies of this fixture. A maintainer must create separate
+Pair accounts and characters through the controlled Worldserver workflow,
+place Pair B three metres east of Pair A through the server command path, and
+export each with `pdump write`. Each accepted Pair dump requires a checked-in
+adjacent `<dump>.sha256` file in standard `sha256sum --check` format and a
+reviewed provenance entry recording its source digest and placement facts.
+
+`realm reset-state --yes` checks both Pair files and their checksums before it
+stops Compose or deletes the labelled state volume. It intentionally refuses a
+reset until this one-time review has happened; neither copied nor hand-edited
+Character SQL is an admissible substitute.

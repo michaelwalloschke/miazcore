@@ -25,6 +25,21 @@ require_secrets() {
     done
 }
 
+validate_pair_pdumps() {
+    local fixture checksum
+    for fixture in reference-pair-a-character.pdump reference-pair-b-character.pdump; do
+        checksum="$base_dir/fixtures/$fixture.sha256"
+        [[ -f "$base_dir/fixtures/$fixture" && -f "$checksum" ]] || {
+            echo "missing reviewed Pair Pdump/provenance checksum: $fixture" >&2
+            exit 66
+        }
+        (cd "$base_dir/fixtures" && sha256sum --check --status "$(basename -- "$checksum")") || {
+            echo "Pair Pdump provenance checksum failed: $fixture" >&2
+            exit 66
+        }
+    done
+}
+
 init_secrets() {
     umask 077
     mkdir -p "$base_dir/secrets"
@@ -53,6 +68,7 @@ assert_labeled_volume() {
 reset() {
     local include_data="$1" confirmed="${2:-}"
     local state_volume="${project}_database-data" data_volume="${project}_server-data"
+    validate_pair_pdumps
     echo "reset target: $state_volume"
     [[ "$include_data" == true ]] && echo "reset target: $data_volume"
     if [[ "$confirmed" != --yes ]]; then
@@ -116,18 +132,23 @@ PY
             SELECT COUNT(*) FROM realmlist
             WHERE id=1 AND name=\"Miazcore Reference Realm\" AND address=\"$MIAZCORE_EXPECTED_REALM_ADDRESS\"
               AND port=8085 AND gamebuild=12340;")"
-          account_id="$("${mysql_base[@]}" acore_auth --execute="
-            SELECT id FROM account
-            WHERE username=\"MIAZTEST\" AND expansion=2 AND locked=0 AND lock_country=\"00\"
-              AND (totp_secret IS NULL OR totp_secret=\"\");")"
-          character_count="$("${mysql_base[@]}" acore_characters --execute="
-            SELECT COUNT(*) FROM characters
-            WHERE account=$account_id AND name=\"Miaztest\" AND race=1 AND class=1 AND gender=0
-              AND level=1 AND map=0 AND online=0 AND transguid=0
-              AND trans_x=0 AND trans_y=0 AND trans_z=0 AND trans_o=0;")"
-          [[ "$realm_count" == 1 && "$account_id" =~ ^[0-9]+$ && "$character_count" == 1 ]]
+          fixture_count="$("${mysql_base[@]}" acore_characters --execute="
+            SELECT COUNT(*) FROM characters c JOIN acore_auth.account a ON a.id=c.account
+            WHERE (a.username, c.name) IN ((\"MIAZTEST\", \"Miaztest\"), (\"MIAZPAIRA\", \"Miazpaira\"), (\"MIAZPAIRB\", \"Miazpairb\"))
+              AND a.expansion=2 AND a.locked=0 AND a.lock_country=\"00\" AND (a.totp_secret IS NULL OR a.totp_secret=\"\")
+              AND c.race=1 AND c.class=1 AND c.gender=0 AND c.level=1 AND c.map=0 AND c.online=0 AND c.transguid=0
+              AND c.trans_x=0 AND c.trans_y=0 AND c.trans_z=0 AND c.trans_o=0;")"
+          distinct_accounts="$("${mysql_base[@]}" acore_characters --execute="
+            SELECT COUNT(DISTINCT c.account) FROM characters c
+            WHERE c.name IN (\"Miaztest\", \"Miazpaira\", \"Miazpairb\");")"
+          relation="$("${mysql_base[@]}" acore_characters --execute="
+            SELECT COUNT(*) FROM characters a JOIN characters b
+            WHERE a.name=\"Miazpaira\" AND b.name=\"Miazpairb\" AND a.map=b.map
+              AND ABS((b.position_x-a.position_x)-3.0)<=0.001 AND ABS(b.position_y-a.position_y)<=0.001
+              AND ABS(b.position_z-a.position_z)<=0.001 AND ABS(b.orientation-a.orientation)<=0.001;")"
+          [[ "$realm_count" == 1 && "$fixture_count" == 3 && "$distinct_accounts" == 3 && "$relation" == 1 ]]
         '
-        echo "health: orchestration, processes, host sockets, and semantic fixture passed"
+        echo "health: orchestration, processes, host sockets, and three-fixture invariant passed"
         ;;
     # Test-only settlement boundary. A successful client logout closes its
     # socket before AzerothCore has necessarily persisted `online=0`; callers
@@ -147,7 +168,7 @@ PY
               export MYSQL_PWD="$(cat /run/secrets/database_root_password)"
               mysql --user=root --batch --skip-column-names acore_characters --execute="
                 SELECT COUNT(*) FROM characters
-                WHERE name=\"Miaztest\" AND online=0 AND transguid=0;" | grep -qx 1
+                WHERE name IN (\"Miaztest\", \"Miazpaira\", \"Miazpairb\") AND online=0 AND transguid=0;" | grep -qx 3
             '; then
                 echo "logout settlement: reference character is offline"
                 exit 0
