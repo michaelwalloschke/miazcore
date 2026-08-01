@@ -98,6 +98,20 @@ if [[ "$mode" == export ]]; then
     exit 0
 fi
 
+if [[ "$mode" == bootstrap-pair-accounts ]]; then
+    : >"$command_file"
+    for index in 1 2; do
+        account_id="$(mysql_auth --execute="SELECT id FROM account WHERE username=UPPER('${accounts[index]}');")"
+        if [[ -z "$account_id" ]]; then
+            printf 'account create %s %s\n' "${accounts[index]}" "${passwords[index]}" >>"$command_file"
+        fi
+    done
+    printf 'server shutdown 1\n' >>"$command_file"
+    run_worldserver
+    echo "fixture: Pair accounts prepared through Worldserver"
+    exit 0
+fi
+
 [[ "$mode" == provision ]] || { echo "fixture: unsupported mode $mode" >&2; exit 64; }
 for fixture in "${fixtures[@]}"; do
     [[ -f "$fixture" ]] || { echo "fixture: required reviewed pdump is missing" >&2; exit 66; }
