@@ -79,7 +79,8 @@ case "${1:-}" in
         # One-shot import/provision work may recreate or restart MySQL while an
         # existing server container remains up. Always finish with fresh server
         # processes so their pools and realm cache target the current database.
-        "${compose[@]}" up --detach --wait --wait-timeout 180 --force-recreate --no-deps authserver worldserver
+        "${compose[@]}" up --detach --force-recreate --no-deps authserver worldserver
+        "${compose[@]}" up --detach --wait --wait-timeout 180 --no-deps authserver worldserver
         "$0" health
         ;;
     down) "${compose[@]}" down --remove-orphans ;;
