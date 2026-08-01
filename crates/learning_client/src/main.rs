@@ -8,7 +8,10 @@ use std::{
 
 use bevy::{prelude::*, time::TimeUpdateStrategy, window::WindowPlugin};
 use client_bevy::{LearningClientPlugin, RenderProofPlugin, SessionBridge};
-use client_session::{ClientConfig, FixtureProfile, LiveDiagnosticSession, OfflineSession};
+use client_session::{ClientConfig, LiveDiagnosticSession, OfflineSession};
+
+mod fixture_profile;
+use fixture_profile::FixtureProfile;
 
 fn main() {
     if let Err(error) = run() {
@@ -24,7 +27,7 @@ fn run() -> Result<(), StartupError> {
 
     // Configuration and credentials are fully validated before Bevy or a session is constructed.
     let configuration = match arguments.fixture_profile {
-        Some(profile) => ClientConfig::reference_realm_fixture_profile(&repository_root, profile)?,
+        Some(profile) => fixture_profile::configuration(&repository_root, profile)?,
         None => ClientConfig::reference_realm(&repository_root)?,
     };
     let loaded = configuration.load()?;
@@ -271,9 +274,7 @@ fn ensure_repository_root(path: &Path) -> Result<(), StartupError> {
 mod tests {
     use std::ffi::OsString;
 
-    use client_session::FixtureProfile;
-
-    use super::{Arguments, StartupError};
+    use super::{Arguments, FixtureProfile, StartupError};
 
     #[test]
     fn only_non_secret_render_proof_output_is_accepted() {
@@ -385,9 +386,12 @@ mod tests {
     #[test]
     fn fixture_profile_is_closed_and_redacted() {
         assert_eq!(
-            Arguments::parse([OsString::from("--fixture-profile"), OsString::from("pair-a")])
-                .unwrap()
-                .fixture_profile,
+            Arguments::parse([
+                OsString::from("--fixture-profile"),
+                OsString::from("pair-a")
+            ])
+            .unwrap()
+            .fixture_profile,
             Some(FixtureProfile::PairA)
         );
         for invalid in [None, Some("pair-c"), Some("do-not-echo-this")] {

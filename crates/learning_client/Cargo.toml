@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 bevy.workspace = true
 client_bevy.workspace = true
+client_protocol.workspace = true
 client_session.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]

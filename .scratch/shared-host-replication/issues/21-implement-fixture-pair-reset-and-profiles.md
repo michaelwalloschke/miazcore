@@ -1,7 +1,7 @@
 # Implement Fixture Pair reset and profiles
 
 Type: implementation
-Status: open
+Status: claimed
 Blocked by: [Design the paired Fixture reset task](12-design-paired-fixture-reset-task.md), [Decide the Fixture Profile and secret contract](05-decide-fixture-profile-and-secret-contract.md)
 
 ## Objective
@@ -45,3 +45,12 @@ paired reset health, and a lock-held Placement Probe.
 - Reviewed Pair Pdump provenance manifest and SHA-256 values.
 - Redacted reset and Placement-Probe artifacts bound to the implementation
   commit, plus final canonical Realm health.
+
+## Comments
+
+- 2026-08-01: Claimed. Pair Pdump generation remains provenance-gated; reset
+  implementation must fail closed until both reviewed source fixtures exist.
+- 2026-08-01: Closed profile loading is implemented behind the private Learning
+  Client configuration adapter. Canonical reset-owned Pair provisioning,
+  health, lock/recovery semantics, and the Placement Probe remain open work;
+  Pair Pdump generation/review is their explicit human checkpoint.

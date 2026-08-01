@@ -3230,6 +3230,7 @@ dependencies = [
  "bevy",
  "blake3",
  "client_bevy",
+ "client_protocol",
  "client_session",
 ]
 
