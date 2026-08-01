@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use client_session::{ClientPhase, ControlCommand, MovementReadySession};
+use client_session::{ClientEventKind, ClientPhase, ControlCommand, MovementReadySession};
 #[path = "../src/fixture_profile.rs"]
 mod fixture_profile;
 use fixture_profile::FixtureProfile;
@@ -24,6 +24,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let snapshot = session.snapshot();
         reached_movement_ready |= snapshot.phase == ClientPhase::MovementReady;
+        reached_movement_ready |= session.drain_events().into_iter().any(|event| {
+            matches!(
+                event.kind,
+                ClientEventKind::PhaseChanged {
+                    phase: ClientPhase::MovementReady
+                }
+            )
+        });
         if snapshot.entry_anchor.is_some() && snapshot.run_speed.is_some() && reached_movement_ready
         {
             let character = snapshot
