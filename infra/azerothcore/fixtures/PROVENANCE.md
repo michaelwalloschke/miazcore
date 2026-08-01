@@ -24,6 +24,16 @@ export each with `pdump write`. Each accepted Pair dump requires a checked-in
 adjacent `<dump>.sha256` file in standard `sha256sum --check` format and a
 reviewed provenance entry recording its source digest and placement facts.
 
+| Pair fixture | Dump SHA-256 | Generation facts |
+| --- | --- | --- |
+| `reference-pair-a-character.pdump` | `7be1abd6d63756279288626379257a39ecb737b21e59e271833c088de790d4a1` | Account and human warrior created through the controlled build-12340 protocol; map `0`, `(-8949.95, -132.493, 83.5312, 0)` |
+| `reference-pair-b-character.pdump` | `3c60be880e7c33faabfd02d1a73a636fd5b8d22e0fe540cbd2d8aa2968c818ea` | Separate account and human warrior created through the same protocol; then server-side `tele name` placed it at `(-8946.95, -132.493, 83.5312, 0)` |
+
+Both dumps were exported by the digest-pinned Worldserver on 2026-08-01 with
+its `pdump write` command. The temporary `game_tele` row used solely to route
+the offline Worldserver teleport is not part of either dump or the reset
+fixture contract.
+
 The export container accepts only `MIAZCORE_EXPORT_PROFILE=reference`,
 `pair-a`, or `pair-b`; each maps to its fixed Character name and dump basename.
 It does not accept an arbitrary Character or output path.

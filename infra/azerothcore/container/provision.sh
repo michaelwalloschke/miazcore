@@ -51,7 +51,7 @@ ON DUPLICATE KEY UPDATE
     population=VALUES(population), gamebuild=VALUES(gamebuild);
 SQL
 
-mode="${1:-provision}"
+mode="${MIAZCORE_PROVISION_MODE:-${1:-provision}}"
 fixtures=(
     /miazcore/fixtures/reference-character.pdump
     /miazcore/fixtures/reference-pair-a-character.pdump
@@ -109,6 +109,13 @@ if [[ "$mode" == bootstrap-pair-accounts ]]; then
     printf 'server shutdown 1\n' >>"$command_file"
     run_worldserver
     echo "fixture: Pair accounts prepared through Worldserver"
+    exit 0
+fi
+
+if [[ "$mode" == place-pair-b ]]; then
+    printf 'tele name Miazpairb MiazcorePairB\nserver shutdown 1\n' >"$command_file"
+    run_worldserver
+    echo "fixture: Pair B placed through Worldserver"
     exit 0
 fi
 
