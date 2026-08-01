@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     peer.publish_movement_intent(MovementIntent::idle())?;
     let move_stop_after_ms = elapsed_ms(started_at);
     thread::sleep(Duration::from_millis(250));
+    let proof_start_after_ms = elapsed_ms(started_at);
     peer.send_control(ControlCommand::BeginMovementProof)?;
 
     // AzerothCore's ordinary saving logout is deliberately delayed. The
@@ -70,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         result_file,
         format!(
-            "{{\"schema\":\"miazcore.remote-trace-run.v1\",\"observer_guid\":\"{:x}\",\"peer_guid\":\"{:x}\",\"map_id\":{},\"peer_anchor\":{{\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3}}},\"timeline\":{{\"observer_ready_after_ms\":{},\"peer_ready_after_ms\":{},\"move_start_after_ms\":{},\"move_stop_after_ms\":{}}}}}\n",
+            "{{\"schema\":\"miazcore.remote-trace-run.v1\",\"observer_guid\":\"{:x}\",\"peer_guid\":\"{:x}\",\"map_id\":{},\"peer_anchor\":{{\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3}}},\"timeline\":{{\"observer_ready_after_ms\":{},\"peer_ready_after_ms\":{},\"move_start_after_ms\":{},\"move_stop_after_ms\":{},\"proof_start_after_ms\":{}}}}}\n",
             primary_character.guid(),
             peer_character.guid(),
             anchor.map_id,
@@ -81,6 +82,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             peer_ready_after_ms,
             move_start_after_ms,
             move_stop_after_ms,
+            proof_start_after_ms,
         ),
     )?;
     Ok(())
