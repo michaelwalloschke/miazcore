@@ -143,6 +143,7 @@ const REMOTE_TRANSCRIPT_MAX_EVENTS: usize = 16;
 /// credential, or session key.
 struct RemoteTranscript {
     output: PathBuf,
+    started_at: Instant,
     remote_guid: Option<u64>,
     events: Vec<RemoteTranscriptEvent>,
 }
@@ -151,6 +152,7 @@ struct RemoteTranscript {
 struct RemoteTranscriptEvent {
     kind: &'static str,
     guid: u64,
+    received_after_ms: u64,
     opcode: Option<u16>,
     pose: Option<WorldPose>,
 }
@@ -159,6 +161,7 @@ impl RemoteTranscript {
     fn new(output: PathBuf) -> Self {
         Self {
             output,
+            started_at: Instant::now(),
             remote_guid: None,
             events: Vec::new(),
         }
@@ -224,6 +227,12 @@ impl RemoteTranscript {
             self.events.push(RemoteTranscriptEvent {
                 kind,
                 guid,
+                received_after_ms: self
+                    .started_at
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
                 opcode,
                 pose,
             });
@@ -238,8 +247,8 @@ impl RemoteTranscript {
             }
             write!(
                 output,
-                "{{\"kind\":\"{}\",\"guid\":\"{:x}\"",
-                event.kind, event.guid
+                "{{\"kind\":\"{}\",\"guid\":\"{:x}\",\"received_after_ms\":{}",
+                event.kind, event.guid, event.received_after_ms
             )
             .expect("writing to String cannot fail");
             if let Some(opcode) = event.opcode {
@@ -2463,6 +2472,7 @@ mod tests {
         transcript.persist().unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("remote-transcript.v1"));
+        assert!(contents.contains("received_after_ms"));
         for forbidden in ["password", "account", "session", "cipher", "payload"] {
             assert!(!contents.contains(forbidden));
         }

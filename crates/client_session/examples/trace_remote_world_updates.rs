@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         transcript_file,
         result_file,
     } = Arguments::parse(std::env::args_os().skip(1))?;
+    let started_at = Instant::now();
     let root = std::env::current_dir()?;
     let primary_config = ClientConfig::reference_realm(&root)?;
     let peer_config = peer_config(&primary_config, &peer_secret_root)?;
@@ -30,10 +31,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     primary.send_control(ControlCommand::StartEntry)?;
     let primary_snapshot = wait_for_ready(&primary, "observer")?;
+    let observer_ready_after_ms = elapsed_ms(started_at);
 
     let peer = LiveDiagnosticSession::start(peer_config.load()?)?;
     peer.send_control(ControlCommand::StartEntry)?;
     let peer_snapshot = wait_for_ready(&peer, "peer")?;
+    let peer_ready_after_ms = elapsed_ms(started_at);
     let primary_character = primary_snapshot
         .selected_character
         .ok_or_else(|| io::Error::other("observer has no selected Character"))?;
@@ -44,11 +47,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .entry_anchor
         .ok_or_else(|| io::Error::other("peer has no Entry Anchor"))?;
 
+    let move_start_after_ms = elapsed_ms(started_at);
     peer.publish_movement_intent(
         MovementIntent::planar(1.0, 0.0).map_err(|_| io::Error::other("invalid trace intent"))?,
     )?;
     thread::sleep(Duration::from_millis(550));
     peer.publish_movement_intent(MovementIntent::idle())?;
+    let move_stop_after_ms = elapsed_ms(started_at);
     thread::sleep(Duration::from_millis(250));
     peer.send_control(ControlCommand::BeginMovementProof)?;
 
@@ -65,16 +70,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         result_file,
         format!(
-            "{{\"schema\":\"miazcore.remote-trace-run.v1\",\"observer_guid\":\"{:x}\",\"peer_guid\":\"{:x}\",\"map_id\":{},\"peer_anchor\":{{\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3}}}}}\n",
+            "{{\"schema\":\"miazcore.remote-trace-run.v1\",\"observer_guid\":\"{:x}\",\"peer_guid\":\"{:x}\",\"map_id\":{},\"peer_anchor\":{{\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3}}},\"timeline\":{{\"observer_ready_after_ms\":{},\"peer_ready_after_ms\":{},\"move_start_after_ms\":{},\"move_stop_after_ms\":{}}}}}\n",
             primary_character.guid(),
             peer_character.guid(),
             anchor.map_id,
             anchor.east,
             anchor.north,
             anchor.elevation,
+            observer_ready_after_ms,
+            peer_ready_after_ms,
+            move_start_after_ms,
+            move_stop_after_ms,
         ),
     )?;
     Ok(())
+}
+
+fn elapsed_ms(started_at: Instant) -> u64 {
+    started_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 struct Arguments {
