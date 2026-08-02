@@ -513,6 +513,26 @@ fn format_event_tail(view: &DiagnosticView) -> String {
             ClientEventKind::PoseObserved { source, .. } => format!("pose observed / {source:?}"),
             ClientEventKind::MovementSubmitted { .. } => "movement submitted".to_owned(),
             ClientEventKind::ScriptedCorrection { .. } => "scripted correction target".to_owned(),
+            ClientEventKind::RemoteAvatar { change } => match change {
+                client_session::RemoteAvatarChange::Created { id, .. } => {
+                    format!("remote avatar created / {}", id.display_shorthand())
+                }
+                client_session::RemoteAvatarChange::Updated { id, .. } => {
+                    format!("remote avatar updated / {}", id.display_shorthand())
+                }
+                client_session::RemoteAvatarChange::Removed { id, source } => {
+                    format!(
+                        "remote avatar removed / {} / {source:?}",
+                        id.display_shorthand()
+                    )
+                }
+                client_session::RemoteAvatarChange::Faulted { id, category } => {
+                    format!(
+                        "remote avatar faulted / {} / {category:?}",
+                        id.display_shorthand()
+                    )
+                }
+            },
             ClientEventKind::CommandRejected { command, failure } => format!(
                 "{command:?} rejected / {:?} / {}",
                 failure.category(),

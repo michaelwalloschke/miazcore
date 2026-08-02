@@ -16,8 +16,9 @@ pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
     ControlCommand, CorrectionTarget, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,
     MovementIntent, MovementIntentError, MovementProofEvidence, PoseSource, ProofStage,
-    QueueCounters, Recovery, RecoveryAction, SanitizedIdentity, SanitizedText, SelectedCharacter,
-    SemanticDiagnostic, WorldPose,
+    QueueCounters, Recovery, RecoveryAction, RemoteAvatarChange, RemoteAvatarFaultCategory,
+    RemoteAvatarId, RemoteAvatarRemovalSource, RemoteAvatarSnapshot, SanitizedIdentity,
+    SanitizedText, SelectedCharacter, SemanticDiagnostic, WorldPose,
 };
 pub use boundary::BoundaryError;
 pub use character::{CharacterSelectionEvidence, CharacterSelectionSession};

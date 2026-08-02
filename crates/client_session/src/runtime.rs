@@ -20,13 +20,13 @@ use client_protocol::{
     SMSG_UPDATE_OBJECT, WorldAuthResponse, WorldClientStream, WorldEntryLocation,
     WorldServerStream, calculate_srp_client_proof, decode_authoritative_self_update,
     decode_character_enumeration, decode_force_move_root, decode_force_run_speed_change,
-    decode_login_verify_world, decode_remote_world_trace, decode_time_sync_request,
-    decode_unset_can_fly, decode_unsupported_self_control_guid, decode_world_auth_challenge,
-    decode_world_auth_response, encode_client_movement, encode_force_move_root_ack,
-    encode_force_run_speed_change_ack, encode_logon_challenge, encode_logon_proof,
-    encode_move_set_can_fly_ack, encode_player_login, encode_time_sync_response,
-    encode_world_auth_session_frame, read_logon_challenge_response, read_logon_proof_response,
-    read_plain_world_server_frame, read_realm_list_response,
+    decode_login_verify_world, decode_remote_player_frame, decode_remote_world_trace,
+    decode_time_sync_request, decode_unset_can_fly, decode_unsupported_self_control_guid,
+    decode_world_auth_challenge, decode_world_auth_response, encode_client_movement,
+    encode_force_move_root_ack, encode_force_run_speed_change_ack, encode_logon_challenge,
+    encode_logon_proof, encode_move_set_can_fly_ack, encode_player_login,
+    encode_time_sync_response, encode_world_auth_session_frame, read_logon_challenge_response,
+    read_logon_proof_response, read_plain_world_server_frame, read_realm_list_response,
 };
 use zeroize::Zeroizing;
 
@@ -1443,6 +1443,7 @@ where
 
     loop {
         poll_live_world_frames(
+            boundary,
             transport,
             clock,
             &mut server_decoder,
@@ -1772,7 +1773,9 @@ fn timeout_failure_for_reconnect_release() -> ClientFailure {
     )
 }
 
+#[allow(clippy::too_many_arguments)] // retained World ownership is explicit at this protocol boundary
 fn poll_live_world_frames<T, C>(
+    boundary: &mut WorkerBoundary,
     transport: &mut T,
     clock: &mut C,
     decoder: &mut IncrementalWorldServerDecoder,
@@ -1802,22 +1805,43 @@ where
                     RecoveryAction::CheckReferenceRealm,
                 ));
             }
-            Some(count) => decoder.push_bytes(&received[..count]).map_err(|error| {
-                world_protocol_failure(
-                    error,
-                    "movement publication",
-                    RecoveryAction::CheckReferenceRealm,
-                )
-            })?,
+            Some(count) => {
+                if let Err(error) = decoder.push_bytes(&received[..count]) {
+                    boundary.clear_remote_avatar_for_session_failure();
+                    return Err(world_protocol_failure(
+                        error,
+                        "movement publication",
+                        RecoveryAction::CheckReferenceRealm,
+                    ));
+                }
+            }
         }
     }
-    while let Some(frame) = decoder.next_frame().map_err(|error| {
-        world_protocol_failure(
-            error,
-            "movement publication",
-            RecoveryAction::CheckReferenceRealm,
-        )
-    })? {
+    while let Some(frame) = match decoder.next_frame() {
+        Ok(frame) => frame,
+        Err(error) => {
+            boundary.clear_remote_avatar_for_session_failure();
+            return Err(world_protocol_failure(
+                error,
+                "movement publication",
+                RecoveryAction::CheckReferenceRealm,
+            ));
+        }
+    } {
+        let records = match decode_remote_player_frame(&frame) {
+            Ok(records) => records,
+            Err(error) => {
+                boundary.clear_remote_avatar_for_session_failure();
+                return Err(world_protocol_failure(
+                    error,
+                    "remote avatar publication",
+                    RecoveryAction::CheckReferenceRealm,
+                ));
+            }
+        };
+        boundary
+            .apply_remote_player_records(records, Some(map_id))
+            .map_err(|_| DiscoveryError::Boundary)?;
         if let Some(trace) = remote_trace.as_deref_mut() {
             trace.observe(frame.opcode(), frame.payload(), map_id);
         }
@@ -2427,14 +2451,15 @@ mod tests {
         config::CredentialMaterial,
     };
     use client_protocol::{
-        CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK, CMSG_FORCE_RUN_SPEED_CHANGE_ACK,
-        CMSG_LOGOUT_REQUEST, CMSG_MOVE_SET_CAN_FLY_ACK, CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP,
-        HeaderCipher, HeaderDirection, LoginChallengeResponse, MSG_MOVE_HEARTBEAT,
-        MSG_MOVE_START_FORWARD, MSG_MOVE_STOP, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM,
-        SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE,
-        SMSG_LOGIN_VERIFY_WORLD, SMSG_LOGOUT_COMPLETE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ,
-        SMSG_UPDATE_OBJECT, WorldClientStream, calculate_srp_client_proof,
-        decode_login_verify_world, read_logon_challenge_response,
+        AcoreMovementInfo, CMSG_CHAR_ENUM, CMSG_FORCE_MOVE_ROOT_ACK,
+        CMSG_FORCE_RUN_SPEED_CHANGE_ACK, CMSG_LOGOUT_REQUEST, CMSG_MOVE_SET_CAN_FLY_ACK,
+        CMSG_PLAYER_LOGIN, CMSG_TIME_SYNC_RESP, HeaderCipher, HeaderDirection,
+        LoginChallengeResponse, MSG_MOVE_HEARTBEAT, MSG_MOVE_START_FORWARD, MSG_MOVE_STOP,
+        RemotePlayerRecord, SMSG_AUTH_RESPONSE, SMSG_CHAR_ENUM, SMSG_COMPRESSED_UPDATE_OBJECT,
+        SMSG_FORCE_MOVE_ROOT, SMSG_FORCE_RUN_SPEED_CHANGE, SMSG_LOGIN_VERIFY_WORLD,
+        SMSG_LOGOUT_COMPLETE, SMSG_MOVE_UNSET_CAN_FLY, SMSG_TIME_SYNC_REQ, SMSG_UPDATE_OBJECT,
+        WorldClientStream, calculate_srp_client_proof, decode_login_verify_world,
+        read_logon_challenge_response,
     };
 
     use super::{
@@ -4014,9 +4039,11 @@ mod tests {
         let mut clock = FixedClock::sequence([Duration::from_millis(100)]);
         let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
         let mut client_stream = WorldClientStream::new(&key);
+        let (_, mut boundary) = new_boundary(config().identity().clone()).unwrap();
 
         assert!(
             poll_live_world_frames(
+                &mut boundary,
                 &mut transport,
                 &mut clock,
                 &mut decoder,
@@ -4033,6 +4060,7 @@ mod tests {
 
         assert!(
             poll_live_world_frames(
+                &mut boundary,
                 &mut transport,
                 &mut clock,
                 &mut decoder,
@@ -4116,8 +4144,10 @@ mod tests {
         let mut clock = FixedClock::default();
         let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
         let mut client_stream = WorldClientStream::new(&key);
+        let (_, mut boundary) = new_boundary(config().identity().clone()).unwrap();
         assert!(
             poll_live_world_frames(
+                &mut boundary,
                 &mut eof_transport,
                 &mut clock,
                 &mut decoder,
@@ -4128,7 +4158,6 @@ mod tests {
             )
             .is_err()
         );
-
         let state = ScriptState::default();
         let mut partial_transport = PartialFailureTransport {
             writes: state.writes.clone(),
@@ -4153,6 +4182,44 @@ mod tests {
             .is_err()
         );
         assert!(!state.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retained_receive_fails_closed_when_complete_remote_update_is_malformed() {
+        let key = login_session_key();
+        let incoming = retained_server_frame(SMSG_UPDATE_OBJECT, &[0_u8], &key);
+        let mut transport = RetainedScriptTransport {
+            polls: VecDeque::from([RetainedPoll::Bytes(incoming)]),
+            state: ScriptState::default(),
+        };
+        let mut clock = FixedClock::default();
+        let mut decoder = client_protocol::IncrementalWorldServerDecoder::new(&key);
+        let mut client_stream = WorldClientStream::new(&key);
+        let (client, mut boundary) = new_boundary(config().identity().clone()).unwrap();
+        boundary
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate {
+                    guid: 1,
+                    movement: AcoreMovementInfo::ground(1, [1.0, 2.0, 3.0], 0.0, false),
+                }],
+                Some(0),
+            )
+            .unwrap();
+        assert!(client.snapshot().remote_avatar.is_some());
+        assert!(
+            poll_live_world_frames(
+                &mut boundary,
+                &mut transport,
+                &mut clock,
+                &mut decoder,
+                &mut client_stream,
+                42,
+                None,
+                0,
+            )
+            .is_err()
+        );
+        assert!(client.snapshot().remote_avatar.is_none());
     }
 
     #[test]

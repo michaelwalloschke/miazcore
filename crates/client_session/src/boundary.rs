@@ -10,11 +10,15 @@ use std::{
     time::Duration,
 };
 
+use client_protocol::{RemotePlayerRecord, RemotePlayerUnusableCategory};
+
 use crate::{
     CONTROL_CAPACITY, ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot,
     CommandKind, ControlCommand, CorrectionTarget, DiscoveredRealm, EVENT_CAPACITY,
     FailureCategory, MovementIntent, MovementProofEvidence, PoseSource, ProofStage, QueueCounters,
-    Recovery, RecoveryAction, SanitizedIdentity, SelectedCharacter, SemanticDiagnostic, WorldPose,
+    Recovery, RecoveryAction, RemoteAvatarChange, RemoteAvatarFaultCategory, RemoteAvatarId,
+    RemoteAvatarRemovalSource, RemoteAvatarSnapshot, SanitizedIdentity, SelectedCharacter,
+    SemanticDiagnostic, WorldPose,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -172,6 +176,7 @@ pub(crate) struct WorkerBoundary {
     proof_input_frozen: Arc<AtomicBool>,
     last_submitted_was_stop: bool,
     event_sequence: u64,
+    accepted_remote_id: Option<RemoteAvatarId>,
     proof_stage_output: Option<PathBuf>,
 }
 
@@ -419,12 +424,14 @@ impl WorkerBoundary {
         current.submitted_pose_is_stopped = false;
         current.realm_observed_pose = None;
         current.correction_target = None;
+        current.remote_avatar = None;
         current.movement_proof = None;
         current.run_speed = None;
         current.latest_failure = None;
         self.counters
             .snapshot_revision
             .fetch_add(1, Ordering::AcqRel);
+        self.accepted_remote_id = None;
     }
 
     pub(crate) fn reject(&mut self, command: CommandKind, failure: ClientFailure) -> bool {
@@ -446,6 +453,7 @@ impl WorkerBoundary {
         {
             let mut current = self.snapshot.write().expect("client snapshot poisoned");
             current.phase = ClientPhase::Failed(recovery);
+            current.remote_avatar = None;
             current.latest_failure = Some(failure.clone());
             push_diagnostic(&mut current, |sequence| {
                 SemanticDiagnostic::from_failure(sequence, &failure)
@@ -454,6 +462,7 @@ impl WorkerBoundary {
                 .snapshot_revision
                 .fetch_add(1, Ordering::AcqRel);
         }
+        self.accepted_remote_id = None;
         let _ = self.publish(ClientEventKind::PhaseChanged {
             phase: ClientPhase::Failed(recovery),
         }) && self.publish(ClientEventKind::CommandRejected { command, failure })
@@ -469,15 +478,172 @@ impl WorkerBoundary {
         self.worker_stopped.store(true, Ordering::Release);
     }
 
-    fn publish(&mut self, kind: ClientEventKind) -> bool {
-        self.event_sequence = self.event_sequence.saturating_add(1);
+    pub(crate) fn clear_remote_avatar_for_session_failure(&mut self) {
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
+        current.remote_avatar = None;
+        self.counters
+            .snapshot_revision
+            .fetch_add(1, Ordering::AcqRel);
+        self.accepted_remote_id = None;
+    }
+
+    pub(crate) fn apply_remote_player_records(
+        &mut self,
+        records: Vec<RemotePlayerRecord>,
+        entry_map: Option<u32>,
+    ) -> Result<(), BoundaryError> {
+        for record in records {
+            self.apply_remote_player_record(record, entry_map)?;
+        }
+        Ok(())
+    }
+
+    fn apply_remote_player_record(
+        &mut self,
+        record: RemotePlayerRecord,
+        entry_map: Option<u32>,
+    ) -> Result<(), BoundaryError> {
+        let id =
+            RemoteAvatarId::from_realm_guid(record.guid()).ok_or(BoundaryError::WorkerStopped)?;
+        match record {
+            RemotePlayerRecord::PlayerCreate { movement, .. } => match self.accepted_remote_id {
+                None => {
+                    let map_id = entry_map.ok_or_else(|| self.remote_map_missing())?;
+                    self.publish_remote(RemoteAvatarChange::Created {
+                        id,
+                        realm_observed_pose: remote_pose(map_id, movement),
+                    })?;
+                    self.accepted_remote_id = Some(id);
+                }
+                Some(current) if current == id => {
+                    self.publish_remote(RemoteAvatarChange::Faulted {
+                        id,
+                        category: RemoteAvatarFaultCategory::InconsistentLifecycle,
+                    })?;
+                    self.accepted_remote_id = None;
+                }
+                Some(_) => {}
+            },
+            RemotePlayerRecord::PlayerMovement { movement, .. }
+                if self.accepted_remote_id == Some(id) =>
+            {
+                let map_id = entry_map.ok_or_else(|| self.remote_map_missing())?;
+                self.publish_remote(RemoteAvatarChange::Updated {
+                    id,
+                    realm_observed_pose: remote_pose(map_id, movement),
+                })?;
+            }
+            RemotePlayerRecord::OutOfRange { .. } if self.accepted_remote_id == Some(id) => {
+                self.publish_remote(RemoteAvatarChange::Removed {
+                    id,
+                    source: RemoteAvatarRemovalSource::OutOfRange,
+                })?;
+                self.accepted_remote_id = None;
+            }
+            RemotePlayerRecord::Destroy { .. } if self.accepted_remote_id == Some(id) => {
+                self.publish_remote(RemoteAvatarChange::Removed {
+                    id,
+                    source: RemoteAvatarRemovalSource::DestroyObject,
+                })?;
+                self.accepted_remote_id = None;
+            }
+            RemotePlayerRecord::UnusableMovement { category, .. }
+                if self.accepted_remote_id == Some(id) =>
+            {
+                let category = match category {
+                    RemotePlayerUnusableCategory::InvalidPose => {
+                        RemoteAvatarFaultCategory::InvalidPose
+                    }
+                    RemotePlayerUnusableCategory::UnsupportedMovement => {
+                        RemoteAvatarFaultCategory::UnsupportedMovement
+                    }
+                };
+                self.publish_remote(RemoteAvatarChange::Faulted { id, category })?;
+                self.accepted_remote_id = None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn remote_map_missing(&mut self) -> BoundaryError {
+        let failure = ClientFailure::new(
+            FailureCategory::ProtocolIncompatibility,
+            "remote avatar publication",
+            "remote avatar requires entry map",
+            RecoveryAction::CheckReferenceRealm,
+        );
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
+        current.remote_avatar = None;
+        current.phase = ClientPhase::Failed(Recovery {
+            category: FailureCategory::ProtocolIncompatibility,
+            action: RecoveryAction::CheckReferenceRealm,
+        });
+        current.latest_failure = Some(failure.clone());
+        push_diagnostic(&mut current, |sequence| {
+            SemanticDiagnostic::from_failure(sequence, &failure)
+        });
+        self.counters
+            .snapshot_revision
+            .fetch_add(1, Ordering::AcqRel);
+        self.accepted_remote_id = None;
+        self.shutdown.store(true, Ordering::Release);
+        BoundaryError::WorkerStopped
+    }
+
+    fn publish_remote(&mut self, change: RemoteAvatarChange) -> Result<(), BoundaryError> {
+        let sequence = self.event_sequence.saturating_add(1);
         let event = ClientEvent {
-            sequence: self.event_sequence,
-            kind,
+            sequence,
+            kind: ClientEventKind::RemoteAvatar { change },
         };
+        let mut current = self.snapshot.write().expect("client snapshot poisoned");
         match emit_event(&self.events, &self.counters, event) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.event_sequence = sequence;
+                match change {
+                    RemoteAvatarChange::Created {
+                        id,
+                        realm_observed_pose,
+                    }
+                    | RemoteAvatarChange::Updated {
+                        id,
+                        realm_observed_pose,
+                    } => {
+                        current.remote_avatar = Some(RemoteAvatarSnapshot {
+                            id,
+                            realm_observed_pose,
+                            source_sequence: sequence,
+                        });
+                    }
+                    RemoteAvatarChange::Removed { .. } | RemoteAvatarChange::Faulted { .. } => {
+                        current.remote_avatar = None;
+                    }
+                }
+                self.counters
+                    .snapshot_revision
+                    .fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
             Err(BoundaryError::EventBackpressure) => {
+                drop(current);
+                self.handle_event_backpressure();
+                Err(BoundaryError::EventBackpressure)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn publish(&mut self, kind: ClientEventKind) -> bool {
+        let sequence = self.event_sequence.saturating_add(1);
+        let event = ClientEvent { sequence, kind };
+        match emit_event(&self.events, &self.counters, event) {
+            Ok(()) => {
+                self.event_sequence = sequence;
+                true
+            }
+            Err(BoundaryError::EventBackpressure) => {
+                self.clear_remote_avatar_for_session_failure();
                 record_backpressure_failure(
                     &self.snapshot,
                     &self.counters,
@@ -493,6 +659,21 @@ impl WorkerBoundary {
                 | BoundaryError::InputGated,
             ) => false,
         }
+    }
+
+    fn handle_event_backpressure(&mut self) {
+        {
+            let mut current = self.snapshot.write().expect("client snapshot poisoned");
+            current.remote_avatar = None;
+            current.remote_avatar_invalidated_through = self.event_sequence;
+        }
+        self.accepted_remote_id = None;
+        record_backpressure_failure(
+            &self.snapshot,
+            &self.counters,
+            "event FIFO reached capacity",
+        );
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 
@@ -556,9 +737,21 @@ pub(crate) fn new_boundary_with_proof_stage(
             proof_input_frozen,
             last_submitted_was_stop: false,
             event_sequence: 2,
+            accepted_remote_id: None,
             proof_stage_output,
         },
     ))
+}
+
+fn remote_pose(map_id: u32, movement: client_protocol::AcoreMovementInfo) -> WorldPose {
+    let [east, north, elevation] = movement.position();
+    WorldPose {
+        map_id,
+        east,
+        north,
+        elevation,
+        orientation: movement.orientation(),
+    }
 }
 
 fn emit_event(
@@ -623,8 +816,10 @@ mod tests {
 
     use crate::{
         ClientEventKind, ClientPhase, ControlCommand, EVENT_CAPACITY, FailureCategory,
-        MovementIntent, Recovery, RecoveryAction, SanitizedIdentity,
+        MovementIntent, Recovery, RecoveryAction, RemoteAvatarChange, RemoteAvatarFaultCategory,
+        RemoteAvatarId, RemoteAvatarRemovalSource, SanitizedIdentity,
     };
+    use client_protocol::{AcoreMovementInfo, RemotePlayerRecord, RemotePlayerUnusableCategory};
 
     use super::{BoundaryError, CONTROL_CAPACITY, new_boundary};
 
@@ -684,6 +879,250 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event.kind, ClientEventKind::ScriptedCorrection { .. }))
         );
+    }
+
+    #[test]
+    fn remote_avatar_lifecycle_is_lossless_and_foreign_guid_cannot_mutate_it() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let _ = client.drain_events();
+        let first = 0x0100_0000_0000_0001;
+        let foreign = 0x0100_0000_0000_0002;
+        let created = AcoreMovementInfo::ground(1, [4.0, 5.0, 6.0], 0.1, false);
+        let updated = AcoreMovementInfo::ground(2, [7.0, 8.0, 9.0], 0.2, true);
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate {
+                    guid: first,
+                    movement: created,
+                }],
+                Some(530),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerMovement {
+                    guid: foreign,
+                    movement: updated,
+                    opcode: 0x00ee,
+                }],
+                Some(530),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerMovement {
+                    guid: first,
+                    movement: updated,
+                    opcode: 0x00ee,
+                }],
+                Some(530),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::Destroy { guid: first }],
+                Some(530),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate {
+                    guid: first,
+                    movement: created,
+                }],
+                Some(530),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::OutOfRange { guid: first }],
+                Some(530),
+            )
+            .unwrap();
+
+        assert!(client.snapshot().remote_avatar.is_none());
+        let events: Vec<_> = client
+            .drain_events()
+            .into_iter()
+            .filter(|event| matches!(event.kind, ClientEventKind::RemoteAvatar { .. }))
+            .collect();
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].sequence + 1, events[1].sequence);
+        assert_eq!(events[1].sequence + 1, events[2].sequence);
+        assert!(matches!(
+            events[4].kind,
+            ClientEventKind::RemoteAvatar {
+                change: RemoteAvatarChange::Removed {
+                    source: RemoteAvatarRemovalSource::OutOfRange,
+                    ..
+                }
+            }
+        ));
+        assert!(matches!(
+            events[2].kind,
+            ClientEventKind::RemoteAvatar {
+                change: RemoteAvatarChange::Removed {
+                    source: RemoteAvatarRemovalSource::DestroyObject,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn remote_avatar_fault_and_backpressure_clear_the_snapshot_with_a_fence() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let _ = client.drain_events();
+        let guid = 0x0100_0000_0000_0001;
+        let movement = AcoreMovementInfo::ground(1, [4.0, 5.0, 6.0], 0.1, false);
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate { guid, movement }],
+                Some(0),
+            )
+            .unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::UnusableMovement {
+                    guid,
+                    category: RemotePlayerUnusableCategory::InvalidPose,
+                }],
+                Some(0),
+            )
+            .unwrap();
+        assert!(client.snapshot().remote_avatar.is_none());
+        assert!(client.drain_events().iter().any(|event| matches!(
+            event.kind,
+            ClientEventKind::RemoteAvatar {
+                change: RemoteAvatarChange::Faulted {
+                    category: RemoteAvatarFaultCategory::InvalidPose,
+                    ..
+                }
+            }
+        )));
+
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate { guid, movement }],
+                Some(0),
+            )
+            .unwrap();
+        for _ in 1..EVENT_CAPACITY {
+            super::emit_event(
+                &worker.events,
+                &worker.counters,
+                crate::ClientEvent {
+                    sequence: 999,
+                    kind: ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::MovementReady,
+                    },
+                },
+            )
+            .unwrap();
+        }
+        assert!(
+            worker
+                .apply_remote_player_records(
+                    vec![RemotePlayerRecord::PlayerMovement {
+                        guid,
+                        movement,
+                        opcode: 0x00ee
+                    }],
+                    Some(0),
+                )
+                .is_err()
+        );
+        let snapshot = client.snapshot();
+        assert!(snapshot.remote_avatar.is_none());
+        assert!(snapshot.remote_avatar_invalidated_through > 0);
+        assert!(matches!(snapshot.phase, ClientPhase::Failed(_)));
+        assert_eq!(RemoteAvatarId::from_realm_guid(0), None);
+        assert_eq!(
+            RemoteAvatarId::from_realm_guid(guid)
+                .unwrap()
+                .display_shorthand(),
+            "0100000000000001"
+        );
+    }
+
+    #[test]
+    fn remote_avatar_requires_the_authenticated_entry_map_before_publication() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let movement = AcoreMovementInfo::ground(1, [1.0, 2.0, 3.0], 0.0, false);
+        let result = worker.apply_remote_player_records(
+            vec![RemotePlayerRecord::PlayerCreate { guid: 1, movement }],
+            None,
+        );
+        assert_eq!(result, Err(BoundaryError::WorkerStopped));
+        assert!(client.snapshot().remote_avatar.is_none());
+        assert!(matches!(
+            client.snapshot().phase,
+            ClientPhase::Failed(crate::Recovery {
+                category: FailureCategory::ProtocolIncompatibility,
+                ..
+            })
+        ));
+
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate { guid: 1, movement }],
+                Some(0),
+            )
+            .unwrap();
+        assert!(client.snapshot().remote_avatar.is_some());
+        assert!(
+            worker
+                .apply_remote_player_records(
+                    vec![RemotePlayerRecord::PlayerMovement {
+                        guid: 1,
+                        movement,
+                        opcode: 0x00ee,
+                    }],
+                    None,
+                )
+                .is_err()
+        );
+        assert!(client.snapshot().remote_avatar.is_none());
+    }
+
+    #[test]
+    fn clean_retry_clears_remote_state_without_advancing_the_invalidation_fence() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        worker.reset_for_retry();
+        assert_eq!(client.snapshot().remote_avatar_invalidated_through, 0);
+    }
+
+    #[test]
+    fn non_remote_backpressure_does_not_fabricate_a_remote_invalidation_fence() {
+        let (client, mut worker) = new_boundary(identity()).unwrap();
+        let _ = client.drain_events();
+        let movement = AcoreMovementInfo::ground(1, [1.0, 2.0, 3.0], 0.0, false);
+        worker
+            .apply_remote_player_records(
+                vec![RemotePlayerRecord::PlayerCreate { guid: 1, movement }],
+                Some(0),
+            )
+            .unwrap();
+        let _ = client.drain_events();
+        for _ in 0..EVENT_CAPACITY {
+            super::emit_event(
+                &worker.events,
+                &worker.counters,
+                crate::ClientEvent {
+                    sequence: 999,
+                    kind: ClientEventKind::PhaseChanged {
+                        phase: ClientPhase::MovementReady,
+                    },
+                },
+            )
+            .unwrap();
+        }
+        assert!(!worker.publish(ClientEventKind::PhaseChanged {
+            phase: ClientPhase::Offline,
+        }));
+        assert!(client.snapshot().remote_avatar.is_none());
+        assert_eq!(client.snapshot().remote_avatar_invalidated_through, 0);
     }
 
     #[test]

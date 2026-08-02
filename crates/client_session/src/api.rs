@@ -538,6 +538,73 @@ pub struct CorrectionTarget {
     pose: WorldPose,
 }
 
+/// The only identity retained for a selected remote Realm player.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoteAvatarId(u64);
+
+impl RemoteAvatarId {
+    /// Construct an identity from a non-zero Realm GUID.
+    #[must_use]
+    pub const fn from_realm_guid(guid: u64) -> Option<Self> {
+        if guid == 0 { None } else { Some(Self(guid)) }
+    }
+
+    #[must_use]
+    pub const fn realm_guid(self) -> u64 {
+        self.0
+    }
+
+    /// Stable display-only identifier; it is not a character name or model key.
+    #[must_use]
+    pub fn display_shorthand(self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+/// The source of a normal Remote Avatar removal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteAvatarRemovalSource {
+    DestroyObject,
+    OutOfRange,
+}
+
+/// Redacted reason why an accepted Remote Avatar can no longer be represented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteAvatarFaultCategory {
+    InvalidPose,
+    UnsupportedMovement,
+    InconsistentLifecycle,
+}
+
+/// One lossless semantic Remote Avatar transition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RemoteAvatarChange {
+    Created {
+        id: RemoteAvatarId,
+        realm_observed_pose: WorldPose,
+    },
+    Updated {
+        id: RemoteAvatarId,
+        realm_observed_pose: WorldPose,
+    },
+    Removed {
+        id: RemoteAvatarId,
+        source: RemoteAvatarRemovalSource,
+    },
+    Faulted {
+        id: RemoteAvatarId,
+        category: RemoteAvatarFaultCategory,
+    },
+}
+
+/// Latest immutable remote Realm observation, keyed only by Realm GUID.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RemoteAvatarSnapshot {
+    pub id: RemoteAvatarId,
+    pub realm_observed_pose: WorldPose,
+    pub source_sequence: u64,
+}
+
 impl CorrectionTarget {
     #[must_use]
     pub const fn scripted(pose: WorldPose) -> Self {
@@ -573,6 +640,9 @@ pub enum ClientEventKind {
     },
     ScriptedCorrection {
         target: CorrectionTarget,
+    },
+    RemoteAvatar {
+        change: RemoteAvatarChange,
     },
     CommandRejected {
         command: CommandKind,
@@ -640,6 +710,8 @@ pub struct ClientSnapshot {
     pub submitted_pose_is_stopped: bool,
     pub realm_observed_pose: Option<WorldPose>,
     pub correction_target: Option<CorrectionTarget>,
+    pub remote_avatar: Option<RemoteAvatarSnapshot>,
+    pub remote_avatar_invalidated_through: u64,
     pub movement_proof: Option<MovementProofEvidence>,
     pub run_speed: Option<f32>,
     pub queue_counters: QueueCounters,
@@ -661,6 +733,8 @@ impl ClientSnapshot {
             submitted_pose_is_stopped: false,
             realm_observed_pose: None,
             correction_target: None,
+            remote_avatar: None,
+            remote_avatar_invalidated_through: 0,
             movement_proof: None,
             run_speed: None,
             queue_counters: QueueCounters::default(),
