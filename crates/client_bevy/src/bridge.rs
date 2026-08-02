@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 use client_session::{
-    BoundaryError, ClientEvent, ClientSnapshot, ControlCommand, LiveDiagnosticSession,
-    MovementIntent, OfflineSession,
+    BoundaryError, ClientEvent, ClientEventKind, ClientSnapshot, ControlCommand,
+    LiveDiagnosticSession, MovementIntent, OfflineSession,
 };
 
 use crate::ClientScheduleSet;
@@ -195,26 +195,46 @@ impl FromWorld for DiagnosticView {
         let session = world.resource::<SessionBridge>();
         Self {
             snapshot: session.session.snapshot(),
-            recent_events: session.session.drain_events().into(),
+            // Event consumption is owned by the Ingress schedule. Draining
+            // here would drop startup Remote Avatar lifecycle events before
+            // they reach the one-frame lossless projection batch.
+            recent_events: VecDeque::new(),
             mode: session.mode,
         }
     }
 }
 
+/// One-frame, lossless Remote Avatar event ingress. The diagnostic event tail
+/// is intentionally shorter and must never be the projection source.
+#[derive(Debug, Default, Resource)]
+pub(crate) struct RemoteAvatarIngress(pub(crate) Vec<ClientEvent>);
+
 pub(crate) struct SessionBridgePlugin;
 
 impl Plugin for SessionBridgePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DiagnosticView>().add_systems(
-            Update,
-            project_session_boundary.in_set(ClientScheduleSet::Ingress),
-        );
+        app.init_resource::<DiagnosticView>()
+            .init_resource::<RemoteAvatarIngress>()
+            .add_systems(
+                Update,
+                project_session_boundary.in_set(ClientScheduleSet::Ingress),
+            );
     }
 }
 
-fn project_session_boundary(session: Res<SessionBridge>, mut view: ResMut<DiagnosticView>) {
+fn project_session_boundary(
+    session: Res<SessionBridge>,
+    mut view: ResMut<DiagnosticView>,
+    mut remote_ingress: ResMut<RemoteAvatarIngress>,
+) {
     view.snapshot = session.session.snapshot();
-    view.recent_events.extend(session.session.drain_events());
+    let events = session.session.drain_events();
+    remote_ingress.0 = events
+        .iter()
+        .filter(|event| matches!(event.kind, ClientEventKind::RemoteAvatar { .. }))
+        .cloned()
+        .collect();
+    view.recent_events.extend(events);
     while view.recent_events.len() > 8 {
         view.recent_events.pop_front();
     }

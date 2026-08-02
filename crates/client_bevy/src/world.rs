@@ -2,7 +2,11 @@ use std::f32::consts::TAU;
 
 use bevy::prelude::*;
 
-use crate::{ClientScheduleSet, DiagnosticView, camera::spawn_camera};
+use crate::{
+    ClientScheduleSet, DiagnosticView,
+    camera::spawn_camera,
+    remote_avatar::{RemoteAvatarPresentation, RemoteAvatarPresentationState},
+};
 
 const CYAN: Color = Color::srgb(0.41, 0.85, 0.86);
 const AMBER: Color = Color::srgb(0.94, 0.74, 0.41);
@@ -146,6 +150,9 @@ struct RealmObservedMarker;
 #[derive(Component)]
 struct EntryAnchorMarker;
 
+#[derive(Component)]
+struct RemoteAvatarRoot(client_session::RemoteAvatarId);
+
 pub(crate) struct DiagnosticWorldPlugin;
 
 impl Plugin for DiagnosticWorldPlugin {
@@ -160,10 +167,104 @@ impl Plugin for DiagnosticWorldPlugin {
             .add_systems(Startup, setup_diagnostic_world)
             .add_systems(
                 Update,
-                (project_authoritative_entry, project_pose_markers)
+                (
+                    project_authoritative_entry,
+                    project_pose_markers,
+                    project_remote_avatar_marker.after(crate::remote_avatar::project_remote_avatar),
+                )
                     .chain()
                     .in_set(ClientScheduleSet::Presentation),
             );
+    }
+}
+
+fn project_remote_avatar_marker(
+    mut commands: Commands,
+    presentation: Res<RemoteAvatarPresentation>,
+    local_presentation: Res<DiagnosticPresentation>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    existing: Query<(Entity, &RemoteAvatarRoot)>,
+) {
+    let RemoteAvatarPresentationState::Present {
+        id, rendered_pose, ..
+    } = presentation.state
+    else {
+        for (entity, _) in &existing {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let Some(anchor) = local_presentation.entry_anchor else {
+        for (entity, _) in &existing {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let Some(translation) = world_pose_to_scene(anchor, rendered_pose, 0.0) else {
+        for (entity, _) in &existing {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let mut matched = false;
+    for (entity, known) in &existing {
+        if known.0 == id && !matched {
+            matched = true;
+            commands.entity(entity).insert(
+                Transform::from_translation(translation)
+                    .with_rotation(Quat::from_rotation_y(rendered_pose.orientation)),
+            );
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
+    if !matched {
+        commands
+            .spawn((
+                Name::new(format!("Remote Avatar 0x{}", id.display_shorthand())),
+                RemoteAvatarRoot(id),
+                Transform::from_translation(translation)
+                    .with_rotation(Quat::from_rotation_y(rendered_pose.orientation)),
+            ))
+            .with_children(|parent| {
+                let material = materials.add(StandardMaterial {
+                    base_color: AMBER,
+                    emissive: LinearRgba::new(0.32, 0.16, 0.03, 1.0),
+                    perceptual_roughness: 0.34,
+                    ..default()
+                });
+                parent.spawn((
+                    Name::new("Remote Avatar faceted diamond"),
+                    Mesh3d(meshes.add(Cuboid::new(0.42, 0.42, 0.42))),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(0.0, 0.62, 0.0)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+                ));
+                parent.spawn((
+                    Name::new("Remote Avatar pedestal"),
+                    Mesh3d(meshes.add(Cylinder::new(0.26, 0.24))),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(0.0, 0.12, 0.0),
+                ));
+                parent.spawn((
+                    Name::new("Remote Avatar heading arrow"),
+                    Mesh3d(meshes.add(Cuboid::new(0.10, 0.08, 0.46))),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(0.0, 0.62, -0.42),
+                ));
+                parent.spawn((
+                    Name::new("Remote Avatar GUID label"),
+                    Text2d::new(format!("REMOTE 0x{}", id.display_shorthand())),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(AMBER),
+                    Transform::from_xyz(0.0, 0.04, 0.48)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                ));
+            });
     }
 }
 

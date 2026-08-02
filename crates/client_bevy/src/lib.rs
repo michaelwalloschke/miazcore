@@ -7,6 +7,7 @@ mod camera;
 mod diagnostics;
 mod input;
 mod proof;
+mod remote_avatar;
 mod world;
 
 use bevy::prelude::*;
@@ -19,6 +20,7 @@ use bridge::SessionBridgePlugin;
 use camera::ChaseCameraPlugin;
 use diagnostics::DiagnosticsPlugin;
 use input::OfflineInputPlugin;
+use remote_avatar::RemoteAvatarPlugin;
 use world::DiagnosticWorldPlugin;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, SystemSet)]
@@ -81,7 +83,7 @@ impl Plugin for LearningClientPlugin {
             Update,
             trace_diagnostics.in_set(ClientScheduleSet::Diagnostics),
         )
-        .add_plugins(SessionBridgePlugin);
+        .add_plugins((SessionBridgePlugin, RemoteAvatarPlugin));
 
         if self.mode == PresentationMode::Windowed {
             app.add_plugins((

@@ -3,7 +3,11 @@ use std::fmt::Write as _;
 use bevy::prelude::*;
 use client_session::{ClientEventKind, ClientPhase, EntryStage};
 
-use crate::{ClientScheduleSet, DiagnosticView, SessionBridge, world::DiagnosticPresentation};
+use crate::{
+    ClientScheduleSet, DiagnosticView, SessionBridge,
+    remote_avatar::{RemoteAvatarPresentation, RemoteAvatarPresentationState},
+    world::DiagnosticPresentation,
+};
 
 const INK: Color = Color::srgb(0.93, 0.96, 0.93);
 const MUTED: Color = Color::srgb(0.58, 0.65, 0.62);
@@ -61,7 +65,9 @@ impl Plugin for DiagnosticsPlugin {
             .add_systems(Startup, setup_diagnostics)
             .add_systems(
                 Update,
-                update_diagnostics.in_set(ClientScheduleSet::Diagnostics),
+                update_diagnostics
+                    .after(crate::remote_avatar::project_remote_avatar)
+                    .in_set(ClientScheduleSet::Diagnostics),
             )
             .add_systems(
                 Update,
@@ -202,6 +208,7 @@ fn spawn_text_panel(
 fn update_diagnostics(
     view: Res<DiagnosticView>,
     presentation: Res<DiagnosticPresentation>,
+    remote_avatar: Res<RemoteAvatarPresentation>,
     feedback: Res<ConnectActionFeedback>,
     mut texts: Query<(&DiagnosticText, &mut Text, &mut TextColor)>,
 ) {
@@ -246,8 +253,12 @@ fn update_diagnostics(
                     || "SCRIPTED CORRECTION\nNOT ACTIVE".to_owned(),
                     |target| format_pose("SCRIPTED CORRECTION", Some(target.pose())),
                 );
+                let mut remote = format_remote_avatar(&remote_avatar.state);
+                if let Some(diagnostic) = remote_avatar.last_ingress_diagnostic {
+                    let _ = write!(remote, "\nINGRESS {diagnostic}");
+                }
                 text.0 = format!(
-                    "IDENTITY & POSES\n\n{rendered}\n\n{anchor}\n\n{predicted}\n\n{submitted}\n\n{observed}\n\n{correction}\n\nRUN SPEED\n{}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\n{}",
+                    "IDENTITY & POSES\n\n{rendered}\n\n{anchor}\n\n{predicted}\n\n{submitted}\n\n{observed}\n\n{correction}\n\n{remote}\n\nRUN SPEED\n{}\n\nBOUNDARY\ncontrol  {:>2}/16\nevents   {:>2}/64\nintent revision  {:>3}\n\n{}",
                     format_run_speed(snapshot.run_speed),
                     counters.control_queued,
                     counters.event_queued,
@@ -258,7 +269,14 @@ fn update_diagnostics(
                         "NO SOCKETS / NO PACKETS"
                     },
                 );
-                color.0 = CYAN;
+                color.0 = if matches!(
+                    remote_avatar.state,
+                    RemoteAvatarPresentationState::Fault { .. }
+                ) {
+                    Color::srgb(0.95, 0.32, 0.28)
+                } else {
+                    CYAN
+                };
             }
             DiagnosticText::Events => {
                 text.0 = format_event_tail(&view);
@@ -282,6 +300,38 @@ fn update_diagnostics(
                 };
             }
         }
+    }
+}
+
+fn format_remote_avatar(state: &RemoteAvatarPresentationState) -> String {
+    match state {
+        RemoteAvatarPresentationState::Absent => "REMOTE AVATAR\nABSENT".to_owned(),
+        RemoteAvatarPresentationState::Present {
+            id,
+            realm_observed_pose,
+            rendered_pose,
+            smooth,
+        } => format!(
+            "REMOTE AVATAR\n{} / PRESENT\nREALM-OBSERVED map {}  {:.2}  {:.2}  {:.2}\nRENDERED map {}  {:.2}  {:.2}  {:.2}\nPROJECTION {}",
+            id.display_shorthand(),
+            realm_observed_pose.map_id,
+            realm_observed_pose.east,
+            realm_observed_pose.north,
+            realm_observed_pose.elevation,
+            rendered_pose.map_id,
+            rendered_pose.east,
+            rendered_pose.north,
+            rendered_pose.elevation,
+            if *smooth { "SMOOTH" } else { "SNAP" },
+        ),
+        RemoteAvatarPresentationState::Fault { id, category } => format!(
+            "REMOTE AVATAR FAULT\n{} / {category:?}",
+            id.display_shorthand()
+        ),
+        RemoteAvatarPresentationState::MapContextUnavailable { id } => format!(
+            "REMOTE AVATAR\n{} / PROJECTION SNAP / MAP CONTEXT UNAVAILABLE",
+            id.display_shorthand()
+        ),
     }
 }
 
@@ -549,12 +599,16 @@ fn format_event_tail(view: &DiagnosticView) -> String {
 mod tests {
     use client_session::{
         ClientEvent, ClientEventKind, ClientPhase, ClientSnapshot, MovementProofEvidence,
-        ProofStage, SanitizedIdentity, WorldPose,
+        ProofStage, RemoteAvatarFaultCategory, RemoteAvatarId, SanitizedIdentity, WorldPose,
     };
 
+    use crate::remote_avatar::RemoteAvatarPresentationState;
     use crate::{DiagnosticMode, DiagnosticView};
 
-    use super::{format_acceptance, format_event_tail, format_movement_proof, format_pose};
+    use super::{
+        format_acceptance, format_event_tail, format_movement_proof, format_pose,
+        format_remote_avatar,
+    };
 
     #[test]
     fn semantic_event_tail_contains_no_credential_vocabulary() {
@@ -627,5 +681,18 @@ mod tests {
         }
         assert!(text.contains("map mismatch"));
         assert!(text.contains("fresh reconnect LOGIN_VERIFY_WORLD"));
+    }
+
+    #[test]
+    fn remote_fault_diagnostic_uses_only_guid_shorthand_and_category() {
+        let id = RemoteAvatarId::from_realm_guid(0x0bad_f00d).unwrap();
+        let text = format_remote_avatar(&RemoteAvatarPresentationState::Fault {
+            id,
+            category: RemoteAvatarFaultCategory::InvalidPose,
+        });
+        assert!(text.contains(&id.display_shorthand()));
+        assert!(text.contains("InvalidPose"));
+        assert!(!text.to_ascii_lowercase().contains("password"));
+        assert!(!text.to_ascii_lowercase().contains("packet body"));
     }
 }
