@@ -53,14 +53,15 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Remote Avatar session-event boundary](research/14-remote-avatar-session-event-boundary.md): the retained World worker owns one accepted GUID and publishes lossless Remote Avatar lifecycle/pose transitions via the existing bounded semantic FIFO and latest-state snapshot; saturation fails the World session rather than silently coalescing updates.
 - [Remote Avatar presentation boundary](research/15-remote-avatar-presentation-boundary.md): Bevy privately projects one GUID-keyed marker from ordered Remote Avatar events and the snapshot fence, smooths only small same-map observed deltas, snaps at `1.628 m` or map change, and cannot feed visual state back into session truth.
 - [Deterministic replication test harness](research/16-deterministic-replication-test-harness.md): a layered, crate-local fake-clock and encrypted-frame fixture vocabulary proves decoder, session, presentation, and observer-only semantic contracts without Docker, a window/GPU renderer, or wall-clock timing claims.
+- [Role-reversed live proof](research/17-role-reversed-live-proof.md): one lock-held no-retry macOS machine gate runs serial A-to-B and B-to-A turns, captures exactly two windows, observes one final Pair B removal, then recovers fixture health; its pass remains pending Ticket 18's manual attestation.
 
 ## Not yet specified
 
-- The role-reversed live-proof and manual two-window acceptance contracts are
-  still design work. The Fixture Pair's same-map initial proximity, fixed
-  placement, reset ownership, local timing boundaries, minimal decoder seam,
-  session-event boundary, Bevy presentation boundary, and deterministic test
-  harness are decided.
+- The manual two-window acceptance contract is still design work. The Fixture
+  Pair's same-map initial proximity, fixed placement, reset ownership, local
+  timing boundaries, minimal decoder seam, session-event boundary, Bevy
+  presentation boundary, deterministic test harness, and role-reversed live
+  machine proof are decided.
 - The implementation slices and Windows/LAN follow-up boundaries will be
   refined only after the earlier protocol and environment decisions are
   resolved.
