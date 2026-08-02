@@ -49,6 +49,48 @@ impl Default for RemoteAvatarPresentation {
 }
 
 impl RemoteAvatarPresentation {
+    /// Apply a project-owned visual snap without changing the retained
+    /// Realm-observed pose.  The controller uses this only for its bounded
+    /// human diagnostic checkpoint.
+    pub(crate) fn show_scripted_projection_snap(&mut self) -> bool {
+        let RemoteAvatarPresentationState::Present {
+            id,
+            realm_observed_pose,
+            ..
+        } = self.state
+        else {
+            return false;
+        };
+        let rendered_pose = WorldPose {
+            east: realm_observed_pose.east + 6.0,
+            ..realm_observed_pose
+        };
+        self.state = RemoteAvatarPresentationState::Present {
+            id,
+            realm_observed_pose,
+            rendered_pose,
+            smooth: false,
+        };
+        true
+    }
+
+    /// Restore the visual marker to its unchanged Realm-observed truth.
+    pub(crate) fn restore_scripted_projection_snap(&mut self) {
+        if let RemoteAvatarPresentationState::Present {
+            id,
+            realm_observed_pose,
+            ..
+        } = self.state
+        {
+            self.state = RemoteAvatarPresentationState::Present {
+                id,
+                realm_observed_pose,
+                rendered_pose: realm_observed_pose,
+                smooth: false,
+            };
+        }
+    }
+
     fn clear(&mut self) {
         self.state = RemoteAvatarPresentationState::Absent;
     }
@@ -335,6 +377,38 @@ mod tests {
         assert!(
             matches!(presentation.state, RemoteAvatarPresentationState::Present { rendered_pose, smooth: false, .. } if (rendered_pose.east - 2.028).abs() < f32::EPSILON)
         );
+    }
+
+    #[test]
+    fn scripted_projection_snap_never_mutates_realm_observed_remote_truth() {
+        let id = RemoteAvatarId::from_realm_guid(7).unwrap();
+        let observed = pose(4.0, 0.0);
+        let mut presentation = RemoteAvatarPresentation {
+            state: RemoteAvatarPresentationState::Present {
+                id,
+                realm_observed_pose: observed,
+                rendered_pose: observed,
+                smooth: false,
+            },
+            ..RemoteAvatarPresentation::default()
+        };
+        assert!(presentation.show_scripted_projection_snap());
+        let RemoteAvatarPresentationState::Present {
+            realm_observed_pose,
+            rendered_pose,
+            ..
+        } = presentation.state
+        else {
+            panic!("snap must retain a present remote avatar");
+        };
+        assert_eq!(realm_observed_pose, observed);
+        assert!((rendered_pose.east - observed.east - 6.0).abs() < f32::EPSILON);
+        presentation.restore_scripted_projection_snap();
+        let RemoteAvatarPresentationState::Present { rendered_pose, .. } = presentation.state
+        else {
+            panic!("restore must retain a present remote avatar");
+        };
+        assert_eq!(rendered_pose, observed);
     }
 
     #[test]

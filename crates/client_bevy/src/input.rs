@@ -19,6 +19,7 @@ impl Plugin for OfflineInputPlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters are intentionally explicit.
 fn collect_presentation_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -27,13 +28,22 @@ fn collect_presentation_input(
     view: Res<DiagnosticView>,
     session: Res<SessionBridge>,
     mut presentation: ResMut<DiagnosticPresentation>,
+    proof_input_gate: Option<Res<crate::shared_host_proof::SharedHostProofInputGate>>,
 ) {
     let right = input_axis(&keys, KeyCode::KeyD, KeyCode::KeyA);
     let forward = input_axis(&keys, KeyCode::KeyW, KeyCode::KeyS);
     let local = Vec2::new(right, forward).normalize_or_zero();
     if view.is_live_entry() {
-        let intent =
-            live_movement_intent(window.focused, &view.snapshot().phase, local, camera.yaw);
+        if proof_input_gate.is_some() {
+            return;
+        }
+        let intent = live_movement_intent(
+            window.focused,
+            &view.snapshot().phase,
+            local,
+            camera.yaw,
+            proof_input_gate.is_some(),
+        );
         // A lossless edge is queued only when moving toggles; steady input
         // remains a replaceable mailbox value.
         let _ = session.publish_movement_intent(intent);
@@ -58,8 +68,9 @@ fn live_movement_intent(
     phase: &client_session::ClientPhase,
     local: Vec2,
     camera_yaw: f32,
+    proof_input_gated: bool,
 ) -> client_session::MovementIntent {
-    if focused && *phase == client_session::ClientPhase::MovementReady {
+    if !proof_input_gated && focused && *phase == client_session::ClientPhase::MovementReady {
         camera_relative_intent(local, camera_yaw)
     } else {
         client_session::MovementIntent::idle()
@@ -143,14 +154,28 @@ mod tests {
             &client_session::ClientPhase::MovementReady,
             Vec2::Y,
             0.0,
+            false,
         );
         let unfocused = live_movement_intent(
             false,
             &client_session::ClientPhase::MovementReady,
             Vec2::Y,
             0.0,
+            false,
         );
         assert!(moving.engaged());
         assert!(!unfocused.engaged());
+    }
+
+    #[test]
+    fn parent_owned_proof_gates_local_movement_input() {
+        let intent = live_movement_intent(
+            true,
+            &client_session::ClientPhase::MovementReady,
+            Vec2::Y,
+            0.0,
+            true,
+        );
+        assert!(!intent.engaged());
     }
 }

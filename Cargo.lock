@@ -1939,6 +1939,8 @@ dependencies = [
  "bevy",
  "blake3",
  "client_session",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

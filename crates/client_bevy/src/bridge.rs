@@ -122,6 +122,15 @@ impl SessionBridge {
         self.session.send_control(ControlCommand::StartEntry)
     }
 
+    /// Request the session-owned clean World disconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained worker cannot accept the command.
+    pub fn send_disconnect(&self) -> Result<(), BoundaryError> {
+        self.session.send_control(ControlCommand::Disconnect)
+    }
+
     /// Retry one previously failed configured world-entry operation.
     ///
     /// # Errors
@@ -209,12 +218,19 @@ impl FromWorld for DiagnosticView {
 #[derive(Debug, Default, Resource)]
 pub(crate) struct RemoteAvatarIngress(pub(crate) Vec<ClientEvent>);
 
+/// Full one-frame semantic ingress retained for a proof sidecar. Unlike the
+/// visible diagnostic tail it is never truncated before the proof adapter has
+/// copied it into its revisioned semantic history.
+#[derive(Debug, Default, Resource)]
+pub(crate) struct ProofEventIngress(pub(crate) Vec<ClientEvent>);
+
 pub(crate) struct SessionBridgePlugin;
 
 impl Plugin for SessionBridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DiagnosticView>()
             .init_resource::<RemoteAvatarIngress>()
+            .init_resource::<ProofEventIngress>()
             .add_systems(
                 Update,
                 project_session_boundary.in_set(ClientScheduleSet::Ingress),
@@ -226,9 +242,11 @@ fn project_session_boundary(
     session: Res<SessionBridge>,
     mut view: ResMut<DiagnosticView>,
     mut remote_ingress: ResMut<RemoteAvatarIngress>,
+    mut proof_ingress: ResMut<ProofEventIngress>,
 ) {
     view.snapshot = session.session.snapshot();
     let events = session.session.drain_events();
+    proof_ingress.0.clone_from(&events);
     remote_ingress.0 = events
         .iter()
         .filter(|event| matches!(event.kind, ClientEventKind::RemoteAvatar { .. }))

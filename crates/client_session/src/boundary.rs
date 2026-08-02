@@ -393,7 +393,7 @@ impl WorkerBoundary {
                 .snapshot_revision
                 .fetch_add(1, Ordering::AcqRel);
         }
-        self.publish(ClientEventKind::MovementSubmitted { pose })
+        self.publish(ClientEventKind::MovementSubmitted { pose, stopped })
     }
 
     /// Publish a scripted correction target without mutating realm-observed

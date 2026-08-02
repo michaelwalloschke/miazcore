@@ -637,6 +637,7 @@ pub enum ClientEventKind {
     },
     MovementSubmitted {
         pose: WorldPose,
+        stopped: bool,
     },
     ScriptedCorrection {
         target: CorrectionTarget,
@@ -900,7 +901,10 @@ mod tests {
                 source: PoseSource::EntryObservation,
                 pose,
             },
-            ClientEventKind::MovementSubmitted { pose },
+            ClientEventKind::MovementSubmitted {
+                pose,
+                stopped: true,
+            },
             ClientEventKind::CommandRejected {
                 command: CommandKind::StartEntry,
                 failure: failure.clone(),

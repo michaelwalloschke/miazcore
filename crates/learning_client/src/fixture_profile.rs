@@ -14,6 +14,22 @@ pub(crate) enum FixtureProfile {
 }
 
 impl FixtureProfile {
+    #[allow(dead_code)] // used by the binary, not the fixture examples
+    pub(crate) const fn token(self) -> &'static str {
+        match self {
+            Self::PairA => "pair-a",
+            Self::PairB => "pair-b",
+        }
+    }
+
+    #[allow(dead_code)] // used by the binary, not the fixture examples
+    pub(crate) const fn window_suffix(self) -> &'static str {
+        match self {
+            Self::PairA => "PAIR A",
+            Self::PairB => "PAIR B",
+        }
+    }
+
     pub(crate) const fn character_name(self) -> &'static str {
         match self {
             Self::PairA => "Miazpaira",

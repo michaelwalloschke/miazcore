@@ -790,7 +790,10 @@ fn observer_oracle_rejects_late_or_non_observer_substitutes_and_resets_for_retry
         scenario.record(
             ClientEvent {
                 sequence: 1,
-                kind: ClientEventKind::MovementSubmitted { pose: target },
+                kind: ClientEventKind::MovementSubmitted {
+                    pose: target,
+                    stopped: true,
+                },
             },
             Duration::ZERO,
         ),

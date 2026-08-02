@@ -8,12 +8,14 @@ mod diagnostics;
 mod input;
 mod proof;
 mod remote_avatar;
+mod shared_host_proof;
 mod world;
 
 use bevy::prelude::*;
 
 pub use bridge::{DiagnosticMode, DiagnosticSession, DiagnosticView, SessionBridge};
 pub use proof::RenderProofPlugin;
+pub use shared_host_proof::{SharedHostProofConfig, SharedHostProofPlugin};
 pub use world::DiagnosticPresentation;
 
 use bridge::SessionBridgePlugin;

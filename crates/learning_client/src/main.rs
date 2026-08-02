@@ -7,7 +7,10 @@ use std::{
 };
 
 use bevy::{prelude::*, time::TimeUpdateStrategy, window::WindowPlugin};
-use client_bevy::{LearningClientPlugin, RenderProofPlugin, SessionBridge};
+use client_bevy::{
+    LearningClientPlugin, RenderProofPlugin, SessionBridge, SharedHostProofConfig,
+    SharedHostProofPlugin,
+};
 use client_session::{ClientConfig, LiveDiagnosticSession, OfflineSession};
 
 mod fixture_profile;
@@ -26,6 +29,9 @@ fn run() -> Result<(), StartupError> {
     ensure_repository_root(&repository_root)?;
 
     // Configuration and credentials are fully validated before Bevy or a session is constructed.
+    if arguments.shared_host_proof_dir.is_some() && arguments.fixture_profile.is_none() {
+        return Err(StartupError::SharedHostProofRequiresProfile);
+    }
     let configuration = match arguments.fixture_profile {
         Some(profile) => fixture_profile::configuration(&repository_root, profile)?,
         None => ClientConfig::reference_realm(&repository_root)?,
@@ -47,9 +53,19 @@ fn run() -> Result<(), StartupError> {
     };
 
     let mut app = App::new();
+    let title = arguments.fixture_profile.map_or_else(
+        || "Miazcore — Diagnostic World".to_owned(),
+        |profile| {
+            if arguments.shared_host_proof_dir.is_some() {
+                format!("Miazcore — Diagnostic World — {}", profile.window_suffix())
+            } else {
+                "Miazcore — Diagnostic World".to_owned()
+            }
+        },
+    );
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Miazcore — Diagnostic World".into(),
+            title,
             resolution: (1280, 720).into(),
             ..default()
         }),
@@ -57,6 +73,15 @@ fn run() -> Result<(), StartupError> {
     }))
     .insert_resource(session)
     .add_plugins(LearningClientPlugin::windowed());
+
+    if let Some(directory) = arguments.shared_host_proof_dir {
+        let profile = arguments
+            .fixture_profile
+            .expect("shared-host proof profile checked before app construction");
+        let proof = SharedHostProofConfig::admit(&repository_root, profile.token(), directory)
+            .map_err(StartupError::SharedHostProof)?;
+        app.add_plugins(SharedHostProofPlugin::new(proof));
+    }
 
     if let Some(output) = arguments.proof_output {
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
@@ -116,6 +141,7 @@ struct Arguments {
     persisted_movement_fault_injection_external_proof_output: Option<PathBuf>,
     persisted_movement_short_negative_external_proof_output: Option<PathBuf>,
     fixture_profile: Option<FixtureProfile>,
+    shared_host_proof_dir: Option<PathBuf>,
     offline: bool,
 }
 
@@ -185,6 +211,16 @@ impl Arguments {
                     Some(value) if value == "pair-b" => Some(FixtureProfile::PairB),
                     _ => return Err(StartupError::UnsupportedFixtureProfile),
                 };
+            } else if argument == "--shared-host-proof-dir" {
+                if parsed.shared_host_proof_dir.is_some() {
+                    return Err(StartupError::DuplicateSharedHostProofDirectory);
+                }
+                parsed.shared_host_proof_dir = Some(
+                    arguments
+                        .next()
+                        .map(PathBuf::from)
+                        .ok_or(StartupError::MissingSharedHostProofDirectory)?,
+                );
             } else {
                 return Err(StartupError::UnsupportedArgument);
             }
@@ -215,6 +251,10 @@ enum StartupError {
     DuplicateOfflineMode,
     OfflineLiveConflict,
     UnsupportedFixtureProfile,
+    MissingSharedHostProofDirectory,
+    DuplicateSharedHostProofDirectory,
+    SharedHostProofRequiresProfile,
+    SharedHostProof(String),
     WorkingDirectory,
     NotRepositoryRoot,
     Configuration(client_session::ConfigError),
@@ -238,6 +278,16 @@ impl fmt::Display for StartupError {
                 formatter.write_str("--offline cannot be combined with a live render proof")
             }
             Self::UnsupportedFixtureProfile => formatter.write_str("unsupported fixture profile"),
+            Self::MissingSharedHostProofDirectory => {
+                formatter.write_str("--shared-host-proof-dir requires a parent-owned path")
+            }
+            Self::DuplicateSharedHostProofDirectory => {
+                formatter.write_str("--shared-host-proof-dir may be supplied only once")
+            }
+            Self::SharedHostProofRequiresProfile => {
+                formatter.write_str("shared-host proof requires --fixture-profile pair-a or pair-b")
+            }
+            Self::SharedHostProof(error) => write!(formatter, "shared-host proof: {error}"),
             Self::WorkingDirectory => formatter.write_str("working directory is unavailable"),
             Self::NotRepositoryRoot => {
                 formatter.write_str("run the Learning Client from the repository root")
@@ -275,6 +325,32 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{Arguments, FixtureProfile, StartupError};
+
+    #[test]
+    fn shared_host_proof_is_closed_to_a_fixture_profile_and_one_directory() {
+        let parsed = Arguments::parse([
+            OsString::from("--fixture-profile"),
+            OsString::from("pair-a"),
+            OsString::from("--shared-host-proof-dir"),
+            OsString::from(".scratch/attempt/pair-a"),
+        ])
+        .unwrap();
+        assert!(parsed.fixture_profile.is_some());
+        assert!(parsed.shared_host_proof_dir.is_some());
+        assert!(matches!(
+            Arguments::parse([OsString::from("--shared-host-proof-dir")]),
+            Err(StartupError::MissingSharedHostProofDirectory)
+        ));
+        assert!(matches!(
+            Arguments::parse([
+                OsString::from("--shared-host-proof-dir"),
+                OsString::from("a"),
+                OsString::from("--shared-host-proof-dir"),
+                OsString::from("b"),
+            ]),
+            Err(StartupError::DuplicateSharedHostProofDirectory)
+        ));
+    }
 
     #[test]
     fn only_non_secret_render_proof_output_is_accepted() {
