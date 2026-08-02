@@ -48,15 +48,16 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Dual-Client Orchestrator](research/10-dual-client-orchestrator.md): one foreground repository parent owns the canonical Realm lock, starts exact Pair A/B child processes, coordinates only serial sidecar-driven role turns, and either completes after final health or retains a visible same-owner recovery failure.
 - [Paired Fixture reset task](research/12-paired-fixture-reset-task.md): reviewed Pair Pdump provenance and one lock-held reset establish exactly the three fixtures, while a separate Placement Probe verifies Pair A/B readiness and placement without claiming Remote Avatar replication.
 - [Fixture Pair replication timeline and tolerances](research/09-replication-timeline-and-tolerances.md): a shared-clock, three-sample Pair A/B study calibrates the serial observer deadlines (`331 ms` first pose, `508 ms` terminal stop, `19,760 ms` removal), the fixed `0.25 m` terminal comparison, and a `1.628 m` Remote Pose Projection snap boundary from local Realm evidence.
+- [Role-reversed Replication Evidence Contract](research/11-replication-evidence-contract.md): an independent, hash-bound pair-evidence bundle requires semantic sidecars and serial GUID/lifecycle/Realm-observed-pose assertions; dual-window capture and the manual extension are mandatory but cannot substitute for them.
 
 ## Not yet specified
 
 - The minimal remote decoder and its session/presentation/event contracts are
   still design work. The Fixture Pair's same-map initial proximity, fixed
   placement, reset ownership, and local timing boundaries are decided.
-- The implementation slices, evidence schema, and Windows/LAN follow-up
-  boundaries will be refined only after the earlier protocol and environment
-  decisions are resolved.
+- The implementation slices and Windows/LAN follow-up boundaries will be
+  refined only after the earlier protocol and environment decisions are
+  resolved.
 
 ## Out of scope
 
