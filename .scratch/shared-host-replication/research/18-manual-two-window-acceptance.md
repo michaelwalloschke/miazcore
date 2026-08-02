@@ -89,16 +89,19 @@ to a new file outside the retained attempt, fills the exact `attempt_id`,
 edited in place and the reviewer does not manufacture digests.
 
 Finalization first validates the completed closed attestation against the
-machine attempt and Ticket 11 redaction/schema rules. It then atomically copies
-the accepted attestation into `manual-attestation.json`, writes the derived
-`report.md`, creates the final sorted files table (including both files), and
-writes the manifest last. The attestation binds only the earlier immutable
-header and `attestation_subject_files` digests, so it does not hash itself.
-Full validation still requires hashes for every final retained regular file. A
+machine attempt and Ticket 11 redaction/schema rules. It then follows Ticket
+22's byte-copy-and-rehash curation: only provenance-listed canonical sources
+and `machine-provenance.json` enter a temporary final-bundle root; attempt-only
+diagnostics and runtime controls never do. It writes the accepted attestation,
+the derived `report.md`, the final sorted files table (including both files),
+and the manifest last. The attestation binds only the earlier immutable header
+and `attestation_subject_files` digests, so it does not hash itself. Full
+validation still requires hashes for every final retained regular file. A
 `FAIL` attestation, failed binding, bad digest, missing check, extra key,
-secret-bearing note, or failed bundle validation retains the attempt as failed
-and cannot produce a passing report. Human approval cannot replace a missing
-automated assertion.
+secret-bearing note, or failed bundle validation creates Ticket 22's separate
+redacted finalization-failure record, leaves the closed Machine Attempt's
+machine result unchanged, and cannot produce a passing report. Human approval
+cannot replace a missing automated assertion.
 
 ## Explicit deferrals
 

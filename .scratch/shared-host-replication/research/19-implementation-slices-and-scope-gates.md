@@ -189,17 +189,19 @@ from Ticket 17. The foreground parent owns one canonical lock, reset/health,
 exact Pair A/B child PIDs, serial command commits, observer-only sidecar
 assertions, bounded review checkpoints, exact two-window ScreenCaptureKit
 capture, B removal observation, child reaping, one recovery, and retained
-machine-proof artifacts.
+Machine Attempt artifacts under `artifacts/shared-host-replication/attempts`.
 
 **Entry gate:** Slices 1–5 pass; macOS Screen Recording is granted; the
 canonical Realm and Placement Probe are healthy; and the checkout is clean.
 
 **Exit gate:** fake-adapter script tests cover every fail-closed condition,
-then one reset-scoped live run reaches `PASS_PENDING_MANUAL`: two distinct
+then one reset-scoped live run reaches immutable machine result `PASS` pending
+manual finalization: two distinct
 Metal windows, serial A-to-B/B-to-A semantics, `331 ms`/`508 ms`/`19,760 ms`
 bounds, `0.25 m` observer-only comparisons, exact capture metadata, Pair B
 `Removed`, Pair A settlement, final reset, and Realm health. A failed attempt
-is retained and never auto-retried; failed recovery retains the lock.
+is retained and never auto-retried; successful output includes closed machine
+provenance while failed recovery retains the lock.
 
 **Verification:** contract/behavior shell tests before the live gate; the
 live run uses only the canonical loopback Realm and exact app titles. It does
@@ -215,13 +217,14 @@ peer crash/reconnect, and generalized orchestration.
 reviewer.
 
 Implement the closed `miazcore.shared-host-replication-manual-attestation.v1`
-validator and the Ticket 11 two-stage manifest finalizer. Slices 5 and 6 have
-already implemented and orchestrated Ticket 18's manual checkpoints inside the
-original lock-held run; this slice validates and binds that recorded review to
-its immutable machine inputs, then writes the full bundle only after all hashes
-validate.
+validator and the Ticket 11/22 two-stage manifest finalizer. Slices 5 and 6
+have already implemented and orchestrated Ticket 18's manual checkpoints
+inside the original lock-held run; this slice validates and binds that recorded
+review to immutable Machine Attempt provenance, byte-copies and re-hashes only
+canonical sources into `bundles/<attempt-id>`, then writes the full bundle only
+after all hashes validate.
 
-**Entry gate:** a retained Slice 6 `PASS_PENDING_MANUAL` attempt has immutable
+**Entry gate:** a retained Slice 6 machine result `PASS` attempt has immutable
 machine inputs, sidecars, two-window capture, versions provenance, final Realm
 health, and the fixed pre-attestation header/subject-file digests.
 

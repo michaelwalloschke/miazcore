@@ -50,18 +50,20 @@ Each client writes an atomic, sanitized sidecar in its assigned directory. The
 orchestrator polls bounded completion files; it never scrapes interactive
 window text, logs, packet bytes, database positions, or process output.
 
-For each live child, the parent also owns one atomic command file under its
-assigned run directory: `pair-a/command.json` or `pair-b/command.json`. The
-file contains only `{revision, command}` where `command` is one of `idle`,
-`perform-role-turn`, or `request-clean-shutdown`. A client accepts exactly the
-next increasing revision from its own assigned directory, writes the same
-revision and terminal command result to its sidecar, then removes no evidence.
-The parent writes through a temporary sibling plus rename, waits for the
-matching sidecar acknowledgement, and never writes a second command until the
-first is terminal. Directory ownership and exact profile admission bind the
-channel to the run; it is coordination metadata, not a credential or a remote
-control API. Cleanup removes only the whole owned run directory after children
-are reaped and evidence has been retained.
+For each live child, the parent also owns one atomic command file in its
+ephemeral 0700 runtime workspace: `pair-a/command.json` or
+`pair-b/command.json`. The file contains only `{revision, command}` where
+`command` is one of `idle`, `perform-role-turn`, `show-projection-snap`, or
+`request-clean-shutdown`. A client accepts exactly the next increasing revision
+from its own assigned directory, writes the same revision and terminal command
+result to its sidecar, then removes no evidence. The parent writes through a
+temporary sibling plus rename, waits for the matching sidecar acknowledgement,
+and never writes a second command until the first is terminal. Directory
+ownership and exact profile admission bind the channel to the run; it is
+coordination metadata, not a credential or a remote control API. The closed
+commands.json ledger preserves accepted command history; cleanup removes only
+the runtime workspace after children are reaped while the Machine Attempt stays
+retained.
 
 Required sidecar facts are:
 

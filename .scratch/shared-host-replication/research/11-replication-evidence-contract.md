@@ -19,10 +19,11 @@ Remote Avatar lifecycle, pose, or identity by itself.
 ## Bundle layout and integrity
 
 ```text
-artifacts/shared-host-replication/<attempt-id>/
+artifacts/shared-host-replication/bundles/<attempt-id>/
   candidate_sha
   commands.json
   versions.json
+  machine-provenance.json
   manifest.json
   pair-a/sidecar.json
   pair-b/sidecar.json
@@ -41,14 +42,14 @@ and the explicit deferrals. Its canonical header domain is exactly `schema`,
 its digest is `manifest_header_sha256`. Its `attestation_subject_files` domain
 is the sorted bytewise path-to-hash table for immutable machine inputs:
 `candidate_sha`, `commands.json`, `versions.json`, both sidecars, `turns.json`,
-`capture.png`, and `capture.json`. It excludes `manual-attestation.json`,
+`capture.png`, `capture.json`, and `machine-provenance.json`. It excludes `manual-attestation.json`,
 `report.md`, and `manifest.json`; its digest is `manifest_files_sha256`. Both
 pre-attestation digests appear in the manual attestation. The final `files`
 table separately lists every retained regular file except `manifest.json`,
 including the completed attestation and report. This prevents a hash cycle
 while still binding every final retained file. `manifest.json` is written last
 through a temporary sibling and rename. The validator accepts no symlink,
-directory, unlisted file, missing hash, hash
+hard-link, unlisted directory, unlisted file, missing hash, hash
 mismatch, unexpected field, non-finite number, or schema/version mismatch.
 Each later PASS leaves earlier attempt directories untouched.
 
@@ -60,7 +61,8 @@ attempt_id, profile, guid, entry_anchor, movement_ready, events, terminal`;
 attempt_id, candidate_sha, capture_sha256, backend, timestamp, windows, dimensions`;
 the attestation has `schema, attempt_id, candidate_sha, capture_sha256,
 manifest_header_sha256, manifest_files_sha256, checks, result, notes`; and the
-manifest has `schema, attempt_id, candidate_sha, realm, commands,
+machine-provenance.json has `schema, attempt_id, candidate_sha, realm,
+machine_result, subject_files, subject_files_sha256`; the manifest has `schema, attempt_id, candidate_sha, realm, commands,
 attestation_subject_files, files, deferrals, result`.
 Schemas are `miazcore.shared-host-replication-{file}.v1`; GUIDs are non-zero
 lowercase hexadecimal shorthand, revisions positive/strictly increasing,
@@ -73,13 +75,16 @@ RFC-3339 string. Nested command, version, event, terminal, and turn objects
 are versioned closed records owned by their stated file schema; no consumer may
 accept an unknown key.
 
-`commands.json` records argv tokens only for repository-owned commands; it
+`commands.json` records the accepted parent command ledger and argv tokens only for repository-owned commands; it
 contains no environment, endpoint override, credential path, account, secret,
 or arbitrary child command. `versions.json` records the Rust/toolchain/host,
 repository commit, locked Realm image/fixture digests, and canonical
 `127.0.0.1:3724` / `127.0.0.1:8085` topology. Raw World frames, packet bodies,
 database rows/dumps, unrestricted logs, session/cipher material, credentials,
 and names beyond the already-approved Fixture Profile labels are forbidden.
+The finalizer accepts canonical inputs only from the separate retained Machine
+Attempt described by Ticket 22, byte-copies and re-hashes them into this bundle,
+and rejects attempt-only diagnostics or runtime control files.
 The validator redaction-scans both field names and strings before hashing.
 
 ## Required semantic sidecars
@@ -131,7 +136,7 @@ The SHA-bound manual attestation extends the existing macOS checklist with:
 - both amber Remote Avatar markers and GUID shorthand after `Created`;
 - serial A-then-B movement, where the other window's `OBSERVED` changes before
   its `RENDERED` projection;
-- visible `PROJECTION SNAP` on the scripted large/map correction case;
+- visible `PROJECTION SNAP` on the scripted same-map large-distance correction;
 - `Removed`/`ABSENT` after the observable final clean logout, or a redacted `FAULT` panel with
   no stale marker; and
 - normal local camera/focus controls without equating visual motion to Realm

@@ -16,17 +16,19 @@ The script requires a clean candidate checkout and creates one immutable
 attempt directory:
 
 ```text
-artifacts/shared-host-replication/<utc>-<candidate-sha-prefix>/
+artifacts/shared-host-replication/attempts/<utc>-<candidate-sha-prefix>/
+  attempt.json
   candidate_sha
   versions.json
-  pair-a/{command.json,sidecar.json}
-  pair-b/{command.json,sidecar.json}
+  pair-a/sidecar.json
+  pair-b/sidecar.json
   commands.json
   turns.json
   capture.png
   capture.json
+  machine-provenance.json             # successful machine proof only
   machine-summary.json
-  logs/                              # redacted, allowlisted command logs only
+  diagnostics.json
 ```
 
 Its success is a **machine-proof pass pending Ticket 18's manual attestation**.
@@ -90,7 +92,7 @@ secret-bearing vocabulary, profile/GUID drift, wrong attempt ID, reordered or
 duplicate event sequence, or a second accepted Remote Avatar.
 
 The parent atomically writes `{revision, command}` to each assigned command
-file. Revisions are positive and strictly increasing per profile. Valid
+file in its 0700 ephemeral runtime workspace below `.scratch/`. Revisions are positive and strictly increasing per profile. Valid
 commands are exactly:
 
 ```text
@@ -99,7 +101,10 @@ idle | perform-role-turn | show-projection-snap | request-clean-shutdown
 
 No next command is written until the matching sidecar acknowledgement is
 terminal. A stale, duplicate, skipped, wrong-profile, wrong-directory, or
-unacknowledged command fails the attempt; it never causes a retry.
+unacknowledged command fails the attempt; it never causes a retry. The closed
+`commands.json` ledger retains each accepted command and acknowledgement; the
+mutable runtime command files are reaped with the children and never enter an
+artifact root.
 
 The ready barrier requires both sidecars to show independently authenticated
 `MovementReady`, distinct non-zero GUIDs, same map Entry Anchors, no failure,
@@ -211,8 +216,9 @@ one same-owner reset plus health recovery attempt:
 
 On machine success, request A shutdown after B's observed removal, wait offline
 settlement, run one final canonical reset and health check, write
-`machine-summary.json` result `PASS_PENDING_MANUAL`, and only then release the
-lock. `EXIT`, `INT`, and `TERM` use the same cleanup path.
+`machine-summary.json` with machine result `PASS`, then atomically write the
+Ticket 22 `machine-provenance.json` over the canonical source hashes, and only
+then release the lock. `EXIT`, `INT`, and `TERM` use the same cleanup path.
 
 ## Required script validation
 
@@ -230,7 +236,8 @@ Contract/behavior tests must use fake realm/client/capture adapters to prove:
    rejects full-screen/wrong/duplicate/permission/empty/ack-race cases;
 5. every fail path retains a redacted attempt, reaps children, makes exactly
    one recovery attempt, never retries, and retains the lock on failed recovery;
-6. success reaches final reset and Realm health before `PASS_PENDING_MANUAL`.
+6. success reaches final reset and Realm health before an immutable machine
+   result `PASS` and its `machine-provenance.json` are written.
 
 ## Explicit deferrals
 

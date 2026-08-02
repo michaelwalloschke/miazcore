@@ -12,11 +12,11 @@ serial Replicated Move, while Pair A observes Pair B disappear after Pair B's
 clean logout. Pair A's later shutdown is settlement only, as Tickets 11 and 17
 require.
 
-One final evidence-layout contradiction prevents an implementation-ready
-handoff. It is isolated as [Ticket 22 – Decide machine-attempt curation for
-final evidence](../issues/22-decide-machine-attempt-curation.md). Therefore no
-implementation tickets may be created from the seven-slice plan until Ticket
-22 is resolved.
+The former evidence-layout contradiction is resolved by [Ticket 22 – Decide
+machine-attempt curation for final evidence](22-machine-attempt-curation.md).
+The seven-slice implementation handoff is now ready: Machine Attempts and
+Final Evidence Bundles have separate closed layouts and a hash-bound curation
+boundary.
 
 ## Confirmed route
 
@@ -28,7 +28,7 @@ implementation tickets may be created from the seven-slice plan until Ticket
 | Diagnostic World projection | Tickets 7, 15 | Slice 3 has one marker, source-separated poses, deterministic smoothing/snap, and no feedback into session truth. |
 | Deterministic composition | Tickets 9, 16 | Slice 4 has test-only encrypted scripts, fake clock, and observer-only truth assertions. |
 | Per-client and parent proof control | Tickets 10, 17, 18 | Slices 5–6 have exact Pair admission, serial roles, bounded manual checkpoints, ScreenCaptureKit capture, cleanup, and Realm health. |
-| Final human-bound evidence | Tickets 11, 18 | Slice 7 has a closed attestation, non-cyclic pre-attestation digest domains, and final-manifest rules, subject to Ticket 22. |
+| Final human-bound evidence | Tickets 11, 18, 22 | Slice 7 has a closed attestation, non-cyclic pre-attestation digest domains, provenance-checked curation, and final-manifest rules. |
 
 The route preserves these non-negotiable scope gates:
 
@@ -46,29 +46,31 @@ The route preserves these non-negotiable scope gates:
 - Only a complete Slice 7 validation may claim final bundle PASS; a capture
   or manual attestation never replaces semantic sidecars.
 
-## Newly revealed blocker: machine attempt versus final bundle
+## Resolved machine-attempt curation boundary
 
-Ticket 17's successful attempt root retains additional regular files and a
-directory needed for operating/debugging the machine proof:
+Before Ticket 22, Ticket 17 placed additional regular files and a directory
+needed for operating/debugging the machine proof in its successful attempt
+root:
 
     pair-a/command.json
     pair-b/command.json
     machine-summary.json
     logs/
 
-Ticket 11, in contrast, defines the final bundle root as a closed layout and
+Ticket 11, in contrast, defined the final bundle root as a closed layout and
 requires its validator to reject an unlisted regular file or directory. Its
 final-evidence vocabulary does not define schemas or manifest membership for
 the per-client command files, machine-summary.json, or allowlisted logs.
-Ticket 18's finalization sequence says it writes the attestation, report, and
-manifest but does not decide how those machine-only files are curated.
+Ticket 18's finalization sequence now uses Ticket 22's byte-copy-and-rehash
+curation and does not admit those machine-only files to the final bundle.
 
-Deleting or silently ignoring them would violate retained-attempt/no-overwrite
-semantics; adding them to the final bundle without a schema would weaken the
-closed evidence contract. Reusing either layout for the other cannot be left to
-the future implementation. Ticket 22 owns that exact curation decision.
+Ticket 22 resolves this by keeping runtime command files ephemeral, retaining
+accepted control history in `commands.json`, preserving redacted diagnostics
+only in a Machine Attempt, and copying only provenance-listed canonical files
+to a separate Final Evidence Bundle. No implementation ticket must change that
+boundary.
 
-## Handoff after Ticket 22
+## Implementation handoff
 
 Once Ticket 22 resolves the staging/curation boundary, the handoff consists of
 the following ordered implementation tickets, each mapped one-to-one to the
@@ -86,26 +88,15 @@ Every ticket must cite its corresponding Slice 19 entry/exit gate and retain
 all earlier passing gates. The code owner is respectively client_protocol,
 client_session, client_bevy, crate-local test seams, learning_client,
 repository scripts/capture adapter, and evidence validator/finalizer. No
-ticket may absorb the unresolved curation decision, introduce a second peer,
-or broaden protocol/presentation scope.
+ticket may weaken the resolved curation boundary, introduce a second peer, or
+broaden protocol/presentation scope.
 
-## Verification required before ticket creation
+## Verification required by the handoff
 
-Ticket 22 must establish an exact, validator-enforceable answer for:
-
-1. where successful and failed machine-attempt files live relative to the
-   immutable final bundle;
-2. which machine facts become canonical closed-schema bundle files and which
-   remain redacted diagnostic provenance outside it;
-3. how the final bundle binds the selected machine attempt without copying an
-   untrusted/mutable file, reintroducing a digest cycle, or allowing a
-   finalizer to omit an accepted proof input; and
-4. how failure retention, no-retry, lock recovery, and later PASS attempts
-   remain visible without allowing an earlier failure to be overwritten.
-
-After that decision, a checker must independently validate the selected layout,
-and the seven implementation tickets can be created without a hidden evidence
-policy decision.
+Ticket 22 requires a checker that independently validates the selected layout,
+the provenance hash table, source/target equality, separation of retained
+attempts, and failure visibility. That verification is an exit requirement of
+Slice 7 before the seven implementation tickets can be claimed complete.
 
 ## Explicitly not a product change
 
@@ -113,4 +104,3 @@ This audit does not implement the Remote Avatar decoder, session events, Bevy
 marker, test harness, proof client, orchestrator, capture adapter, evidence
 validator, or final bundle. It neither mutates a Realm nor claims a live
 Replication Proof.
-
