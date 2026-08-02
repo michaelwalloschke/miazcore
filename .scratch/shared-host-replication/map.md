@@ -55,17 +55,17 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Deterministic replication test harness](research/16-deterministic-replication-test-harness.md): a layered, crate-local fake-clock and encrypted-frame fixture vocabulary proves decoder, session, presentation, and observer-only semantic contracts without Docker, a window/GPU renderer, or wall-clock timing claims.
 - [Role-reversed live proof](research/17-role-reversed-live-proof.md): one lock-held no-retry macOS machine gate runs serial A-to-B and B-to-A turns, captures exactly two windows, observes one final Pair B removal, then recovers fixture health; its pass remains pending Ticket 18's manual attestation.
 - [Manual two-window acceptance](research/18-manual-two-window-acceptance.md): a short SHA-bound macOS checklist confirms two distinct Pair windows, readable Remote Avatar presence and pose projection, serial role visibility, clean removal, and local-only camera/focus controls without substituting for semantic sidecars or controlled capture.
+- [Implementation slices and scope gates](research/19-implementation-slices-and-scope-gates.md): seven cumulative, ownership-scoped slices lead from protocol decoder through retained session, Bevy projection, deterministic harness, proof-aware clients, live machine proof, and manual evidence finalization; Ticket 21's Fixture Pair work remains their prerequisite.
 
 ## Not yet specified
 
 - The Fixture Pair's same-map initial proximity, fixed placement, reset
   ownership, local timing boundaries, minimal decoder seam, session-event
   boundary, Bevy presentation boundary, deterministic test harness,
-  role-reversed live machine proof, and manual two-window acceptance are
-  decided.
-- The implementation slices and Windows/LAN follow-up boundaries will be
-  refined only after the earlier protocol and environment decisions are
-  resolved.
+  role-reversed live machine proof, manual two-window acceptance, and
+  implementation slices are decided.
+- Windows/LAN follow-up boundaries remain deferred until this macOS loopback
+  route is implemented and accepted.
 
 ## Out of scope
 
