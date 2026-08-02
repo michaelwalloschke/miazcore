@@ -1,7 +1,7 @@
 # Measure replication timeline and tolerances
 
 Type: wayfinder:research
-Status: claimed
+Status: resolved
 Blocked by: [Design Fixture Pair provisioning](02-design-fixture-pair-provisioning.md), [Trace the remote-player World-Update boundary](03-trace-remote-player-world-update-boundary.md)
 
 ## Question
@@ -15,6 +15,13 @@ serial two-to-four-metre Replicated Move, same-map observer comparison within
 Establish evidence-backed deadlines and settle where smoothing snaps. Do not
 borrow thresholds from wall-clock intuition or turn this into a latency or
 performance benchmark.
+
+## Answer
+
+[Fixture Pair replication timeline and tolerances](../research/09-replication-timeline-and-tolerances.md)
+records a shared-clock, reset-scoped three-sample Pair A/B study and locks the
+local serial role-turn deadlines, pose tolerance, and data-derived snap
+threshold. Its passed artifact ends with a canonical Realm health check.
 
 ## Comments
 
