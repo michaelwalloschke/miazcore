@@ -1,7 +1,7 @@
 # Define the minimal remote-player protocol decoder
 
 Type: wayfinder:grilling
-Status: open
+Status: resolved
 Blocked by: [Trace the remote-player World-Update boundary](03-trace-remote-player-world-update-boundary.md), [Define the Remote Avatar fault boundary](08-define-remote-avatar-fault-boundary.md), [Measure replication timeline and tolerances](09-measure-replication-timeline-and-tolerances.md)
 
 ## Question
@@ -17,3 +17,9 @@ Define strict malformed handling and test provenance. Defer general object
 decoding, NPCs, movement modes beyond the Fixture Pair, and unsupported update
 fields.
 
+## Answer
+
+[Minimal remote-player protocol decoder](../research/13-minimal-remote-player-protocol-decoder.md)
+sets the narrow public, protocol-owned stateless complete-frame decoder seam; strict
+alignment/error ownership; display-data exclusion; deterministic synthetic
+fixture provenance; and the handoff to the later session-event boundary.
