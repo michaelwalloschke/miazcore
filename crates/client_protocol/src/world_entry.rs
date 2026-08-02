@@ -1,6 +1,6 @@
 use flate2::{Decompress, FlushDecompress, Status};
 
-use crate::ProtocolError;
+use crate::{ProtocolError, WorldServerFrame};
 
 pub const CMSG_PLAYER_LOGIN: u32 = 0x003d;
 /// Request a saving logout from the Reference Realm.  A successful movement
@@ -447,6 +447,54 @@ pub enum RemoteWorldTraceEvent {
     Destroy { guid: u64 },
 }
 
+/// Bounded semantic output from a complete, authenticated World frame.
+///
+/// This deliberately exposes neither update values nor object metadata.  A
+/// later session boundary owns peer selection and associates an authenticated
+/// entry map with an accepted GUID.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RemotePlayerRecord {
+    PlayerCreate {
+        guid: u64,
+        movement: AcoreMovementInfo,
+    },
+    PlayerMovement {
+        guid: u64,
+        movement: AcoreMovementInfo,
+        opcode: u16,
+    },
+    OutOfRange {
+        guid: u64,
+    },
+    Destroy {
+        guid: u64,
+    },
+    UnusableMovement {
+        guid: u64,
+        category: RemotePlayerUnusableCategory,
+    },
+}
+
+impl RemotePlayerRecord {
+    #[must_use]
+    pub const fn guid(self) -> u64 {
+        match self {
+            Self::PlayerCreate { guid, .. }
+            | Self::PlayerMovement { guid, .. }
+            | Self::OutOfRange { guid }
+            | Self::Destroy { guid }
+            | Self::UnusableMovement { guid, .. } => guid,
+        }
+    }
+}
+
+/// Redacted reason why a structurally complete peer movement cannot become a pose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemotePlayerUnusableCategory {
+    InvalidPose,
+    UnsupportedMovement,
+}
+
 impl RemoteWorldTraceEvent {
     #[must_use]
     pub const fn guid(self) -> u64 {
@@ -597,33 +645,77 @@ pub fn decode_remote_world_trace(
     opcode: u16,
     payload: &[u8],
 ) -> Result<Vec<RemoteWorldTraceEvent>, ProtocolError> {
+    let events = decode_remote_player_payload(opcode, payload)?
+        .into_iter()
+        .filter_map(|record| match record {
+            RemotePlayerRecord::PlayerCreate { guid, movement } => {
+                Some(RemoteWorldTraceEvent::PlayerCreate { guid, movement })
+            }
+            RemotePlayerRecord::PlayerMovement {
+                guid,
+                movement,
+                opcode,
+            } => Some(RemoteWorldTraceEvent::Movement {
+                guid,
+                movement,
+                opcode,
+            }),
+            RemotePlayerRecord::OutOfRange { guid } => {
+                Some(RemoteWorldTraceEvent::OutOfRange { guid })
+            }
+            RemotePlayerRecord::Destroy { guid } => Some(RemoteWorldTraceEvent::Destroy { guid }),
+            RemotePlayerRecord::UnusableMovement { .. } => None,
+        })
+        .collect();
+    Ok(events)
+}
+
+/// Decode the deliberately small remote-player vocabulary from one complete
+/// plaintext World frame.
+///
+/// The frame must come from [`crate::IncrementalWorldServerDecoder`]. This
+/// function does not accept byte chunks, headers, or cipher state, so it
+/// cannot alter framing alignment while it consumes update containers.
+///
+/// # Errors
+///
+/// Returns an error when a relevant complete frame is malformed, exceeds the
+/// bounded compression contract, or leaves trailing bytes. Structurally valid
+/// but unusable movement yields a redacted record instead.
+pub fn decode_remote_player_frame(
+    frame: &WorldServerFrame,
+) -> Result<Vec<RemotePlayerRecord>, ProtocolError> {
+    decode_remote_player_payload(frame.opcode(), frame.payload())
+}
+
+fn decode_remote_player_payload(
+    opcode: u16,
+    payload: &[u8],
+) -> Result<Vec<RemotePlayerRecord>, ProtocolError> {
     match opcode {
-        SMSG_UPDATE_OBJECT => parse_remote_update_body(payload, opcode),
+        SMSG_UPDATE_OBJECT => parse_remote_player_update_body(payload, opcode),
         SMSG_COMPRESSED_UPDATE_OBJECT => {
             let body = decompress_update(payload)?;
-            parse_remote_update_body(&body, opcode)
+            parse_remote_player_update_body(&body, opcode)
         }
         MSG_MOVE_START_FORWARD_SERVER | MSG_MOVE_HEARTBEAT_SERVER | MSG_MOVE_STOP_SERVER => {
             let mut cursor = Cursor::new(payload, opcode);
             let guid = cursor.packed_guid()?;
-            let movement = AcoreMovementInfo::decode(&mut cursor)?;
+            let (movement, _spline_enabled) = parse_remote_movement_info(&mut cursor)?;
             cursor.finish()?;
-            if movement.is_ordinary_ground() {
-                Ok(vec![RemoteWorldTraceEvent::Movement {
-                    guid,
-                    movement,
-                    opcode,
-                }])
-            } else {
-                Ok(Vec::new())
-            }
+            Ok(remote_movement_record(guid, movement, opcode)
+                .into_iter()
+                .collect())
         }
         SMSG_DESTROY_OBJECT => {
             let mut cursor = Cursor::new(payload, opcode);
             let guid = cursor.u64()?;
             let _death = cursor.u8()?;
             cursor.finish()?;
-            Ok(vec![RemoteWorldTraceEvent::Destroy { guid }])
+            Ok((guid != 0)
+                .then_some(RemotePlayerRecord::Destroy { guid })
+                .into_iter()
+                .collect())
         }
         _ => Ok(Vec::new()),
     }
@@ -901,10 +993,10 @@ fn parse_update_body(
     Ok(found)
 }
 
-fn parse_remote_update_body(
+fn parse_remote_player_update_body(
     body: &[u8],
     opcode: u16,
-) -> Result<Vec<RemoteWorldTraceEvent>, ProtocolError> {
+) -> Result<Vec<RemotePlayerRecord>, ProtocolError> {
     if body.len() > MAX_UPDATE_BODY_SIZE {
         return Err(malformed_world_entry(opcode, 0));
     }
@@ -913,42 +1005,45 @@ fn parse_remote_update_body(
     if block_count > MAX_UPDATE_BLOCKS {
         return Err(cursor.malformed());
     }
-    let mut events = Vec::new();
+
+    let mut records = Vec::new();
     for _ in 0..block_count {
-        let update_type = cursor.u8()?;
-        match update_type {
+        match cursor.u8()? {
             UPDATE_TYPE_VALUES => {
                 let _ = cursor.packed_guid()?;
                 consume_update_mask(&mut cursor)?;
             }
             UPDATE_TYPE_MOVEMENT => {
                 let guid = cursor.packed_guid()?;
-                let movement = parse_movement_block(&mut cursor)?;
+                let movement = parse_remote_movement_block(&mut cursor)?;
                 if let Some(movement) = movement.movement
-                    && movement.is_ordinary_ground()
+                    && let Some(record) = remote_movement_record(guid, movement, SMSG_UPDATE_OBJECT)
                 {
-                    events.push(RemoteWorldTraceEvent::Movement {
-                        guid,
-                        movement,
-                        opcode: SMSG_UPDATE_OBJECT,
-                    });
+                    records.push(record);
                 }
             }
-            UPDATE_TYPE_CREATE_OBJECT | UPDATE_TYPE_CREATE_OBJECT2 => {
+            update_type @ (UPDATE_TYPE_CREATE_OBJECT | UPDATE_TYPE_CREATE_OBJECT2) => {
                 let guid = cursor.packed_guid()?;
                 let object_type = cursor.u8()?;
-                let movement = parse_movement_block(&mut cursor)?;
+                let movement = parse_remote_movement_block(&mut cursor)?;
                 consume_update_mask(&mut cursor)?;
                 if update_type == UPDATE_TYPE_CREATE_OBJECT2
+                    && guid != 0
                     && object_type == OBJECT_TYPE_PLAYER
                     && movement.update_flags & UPDATE_FLAG_SELF == 0
                     && movement.update_flags
                         & (UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION)
                         == UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION
                     && let Some(movement) = movement.movement
-                    && movement.is_ordinary_ground()
                 {
-                    events.push(RemoteWorldTraceEvent::PlayerCreate { guid, movement });
+                    records.push(match movement {
+                        RemoteMovementInfo::Usable(movement) => {
+                            RemotePlayerRecord::PlayerCreate { guid, movement }
+                        }
+                        RemoteMovementInfo::Unusable(category) => {
+                            RemotePlayerRecord::UnusableMovement { guid, category }
+                        }
+                    });
                 }
             }
             UPDATE_TYPE_OUT_OF_RANGE => {
@@ -957,9 +1052,10 @@ fn parse_remote_update_body(
                     return Err(cursor.malformed());
                 }
                 for _ in 0..count {
-                    events.push(RemoteWorldTraceEvent::OutOfRange {
-                        guid: cursor.packed_guid()?,
-                    });
+                    let guid = cursor.packed_guid()?;
+                    if guid != 0 {
+                        records.push(RemotePlayerRecord::OutOfRange { guid });
+                    }
                 }
             }
             UPDATE_TYPE_NEAR => {
@@ -975,7 +1071,184 @@ fn parse_remote_update_body(
         }
     }
     cursor.finish()?;
-    Ok(events)
+    Ok(records)
+}
+
+#[derive(Clone, Copy)]
+enum RemoteMovementInfo {
+    Usable(AcoreMovementInfo),
+    Unusable(RemotePlayerUnusableCategory),
+}
+
+struct RemoteMovementBlock {
+    update_flags: u16,
+    movement: Option<RemoteMovementInfo>,
+}
+
+fn remote_movement_record(
+    guid: u64,
+    movement: RemoteMovementInfo,
+    opcode: u16,
+) -> Option<RemotePlayerRecord> {
+    (guid != 0).then_some(match movement {
+        RemoteMovementInfo::Usable(movement) => RemotePlayerRecord::PlayerMovement {
+            guid,
+            movement,
+            opcode,
+        },
+        RemoteMovementInfo::Unusable(category) => {
+            RemotePlayerRecord::UnusableMovement { guid, category }
+        }
+    })
+}
+
+fn parse_remote_movement_block(
+    cursor: &mut Cursor<'_>,
+) -> Result<RemoteMovementBlock, ProtocolError> {
+    let update_flags = cursor.u16()?;
+    if update_flags & !UPDATE_FLAG_KNOWN != 0 {
+        return Err(cursor.malformed());
+    }
+
+    let movement = if update_flags & UPDATE_FLAG_LIVING != 0 {
+        let (movement, spline_enabled) = parse_remote_movement_info(cursor)?;
+        let mut invalid_pose = false;
+        for _ in 0..9 {
+            invalid_pose |= !cursor.f32()?.is_finite();
+        }
+        if spline_enabled {
+            consume_create_spline(cursor)?;
+        }
+        if invalid_pose {
+            Some(RemoteMovementInfo::Unusable(
+                RemotePlayerUnusableCategory::InvalidPose,
+            ))
+        } else {
+            Some(movement)
+        }
+    } else {
+        None
+    };
+
+    if update_flags & UPDATE_FLAG_UNKNOWN != 0 {
+        cursor.skip(4)?;
+    }
+    if update_flags & UPDATE_FLAG_LOWGUID != 0 {
+        cursor.skip(4)?;
+    }
+    if update_flags & UPDATE_FLAG_HAS_TARGET != 0 {
+        let _ = cursor.packed_guid()?;
+    }
+    if update_flags & UPDATE_FLAG_TRANSPORT != 0 {
+        cursor.skip(4)?;
+    }
+    if update_flags & UPDATE_FLAG_VEHICLE != 0 {
+        cursor.skip(8)?;
+    }
+    if update_flags & UPDATE_FLAG_ROTATION != 0 {
+        cursor.skip(8)?;
+    }
+    if update_flags & UPDATE_FLAG_LIVING == 0 {
+        if update_flags & UPDATE_FLAG_POSITION != 0 {
+            let _ = cursor.packed_guid()?;
+            cursor.skip(8 * 4)?;
+        } else if update_flags & UPDATE_FLAG_STATIONARY_POSITION != 0 {
+            cursor.skip(4 * 4)?;
+        }
+    }
+
+    Ok(RemoteMovementBlock {
+        update_flags,
+        movement,
+    })
+}
+
+fn parse_remote_movement_info(
+    cursor: &mut Cursor<'_>,
+) -> Result<(RemoteMovementInfo, bool), ProtocolError> {
+    let flags = cursor.u32()?;
+    let flags2 = cursor.u16()?;
+    let timestamp = cursor.u32()?;
+    let mut invalid_pose = false;
+    let position = remote_vector3(cursor, &mut invalid_pose)?;
+    let orientation = remote_f32(cursor, &mut invalid_pose)?;
+
+    let transport = if flags & MOVEMENT_FLAG_ON_TRANSPORT != 0 {
+        let guid = cursor.packed_guid()?;
+        let position = remote_vector3(cursor, &mut invalid_pose)?;
+        let orientation = remote_f32(cursor, &mut invalid_pose)?;
+        let time = cursor.u32()?;
+        let seat = i8::from_le_bytes([cursor.u8()?]);
+        let time2 = (flags2 & MOVEMENT_FLAG2_INTERPOLATED_MOVEMENT != 0)
+            .then(|| cursor.u32())
+            .transpose()?;
+        Some(AcoreTransportInfo {
+            guid,
+            position,
+            orientation,
+            time,
+            seat,
+            time2,
+        })
+    } else {
+        None
+    };
+    let has_pitch = flags & (MOVEMENT_FLAG_SWIMMING | MOVEMENT_FLAG_FLYING) != 0
+        || flags2 & MOVEMENT_FLAG2_ALWAYS_ALLOW_PITCHING != 0;
+    let pitch = has_pitch
+        .then(|| remote_f32(cursor, &mut invalid_pose))
+        .transpose()?;
+    let fall_time_ms = cursor.u32()?;
+    let jump = if flags & MOVEMENT_FLAG_FALLING != 0 {
+        Some(AcoreJumpInfo {
+            z_speed: remote_f32(cursor, &mut invalid_pose)?,
+            sin_angle: remote_f32(cursor, &mut invalid_pose)?,
+            cos_angle: remote_f32(cursor, &mut invalid_pose)?,
+            xy_speed: remote_f32(cursor, &mut invalid_pose)?,
+        })
+    } else {
+        None
+    };
+    let spline_elevation = (flags & MOVEMENT_FLAG_SPLINE_ELEVATION != 0)
+        .then(|| remote_f32(cursor, &mut invalid_pose))
+        .transpose()?;
+    let movement = AcoreMovementInfo {
+        flags,
+        flags2,
+        timestamp,
+        position,
+        orientation,
+        transport,
+        pitch,
+        fall_time_ms,
+        jump,
+        spline_elevation,
+    };
+    let remote_movement = if invalid_pose {
+        RemoteMovementInfo::Unusable(RemotePlayerUnusableCategory::InvalidPose)
+    } else if movement.is_ordinary_ground() {
+        RemoteMovementInfo::Usable(movement)
+    } else {
+        RemoteMovementInfo::Unusable(RemotePlayerUnusableCategory::UnsupportedMovement)
+    };
+    Ok((remote_movement, flags & MOVEMENT_FLAG_SPLINE_ENABLED != 0))
+}
+
+fn remote_f32(cursor: &mut Cursor<'_>, invalid_pose: &mut bool) -> Result<f32, ProtocolError> {
+    let value = cursor.f32()?;
+    *invalid_pose |= !value.is_finite();
+    Ok(value)
+}
+
+fn remote_vector3(
+    cursor: &mut Cursor<'_>,
+    invalid_pose: &mut bool,
+) -> Result<[f32; 3], ProtocolError> {
+    Ok([
+        remote_f32(cursor, invalid_pose)?,
+        remote_f32(cursor, invalid_pose)?,
+        remote_f32(cursor, invalid_pose)?,
+    ])
 }
 
 struct MovementBlock {
@@ -1173,11 +1446,17 @@ impl<'a> Cursor<'a> {
     }
 
     fn finite_f32(&mut self) -> Result<f32, ProtocolError> {
-        let value = f32::from_le_bytes(self.take(4)?.try_into().map_err(|_| self.malformed())?);
+        let value = self.f32()?;
         value
             .is_finite()
             .then_some(value)
             .ok_or_else(|| self.malformed())
+    }
+
+    fn f32(&mut self) -> Result<f32, ProtocolError> {
+        Ok(f32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| self.malformed())?,
+        ))
     }
 
     fn vector3(&mut self) -> Result<[f32; 3], ProtocolError> {
@@ -1204,14 +1483,21 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use flate2::{Compression, write::ZlibEncoder};
+
     use super::{
         AcoreJumpInfo, AcoreMovementInfo, Cursor, ForceMoveRoot, MOVEMENT_FLAG_FALLING,
-        MOVEMENT_FLAG_ROOT, MSG_MOVE_HEARTBEAT_SERVER, OBJECT_TYPE_PLAYER, RemoteWorldTraceEvent,
-        SMSG_DESTROY_OBJECT, SMSG_UPDATE_OBJECT, UPDATE_FLAG_LIVING,
-        UPDATE_FLAG_STATIONARY_POSITION, UPDATE_TYPE_CREATE_OBJECT, decode_force_move_root,
+        MOVEMENT_FLAG_ROOT, MSG_MOVE_HEARTBEAT_SERVER, MSG_MOVE_START_FORWARD_SERVER,
+        MSG_MOVE_STOP_SERVER, OBJECT_TYPE_PLAYER, RemotePlayerRecord, RemotePlayerUnusableCategory,
+        RemoteWorldTraceEvent, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_DESTROY_OBJECT,
+        SMSG_UPDATE_OBJECT, UPDATE_FLAG_LIVING, UPDATE_FLAG_STATIONARY_POSITION,
+        UPDATE_TYPE_CREATE_OBJECT, decode_force_move_root, decode_remote_player_frame,
         decode_remote_world_trace, encode_client_movement, encode_force_move_root_ack,
         push_packed_guid,
     };
+    use crate::WorldServerFrame;
 
     #[test]
     fn acore_movement_codec_preserves_integer_fall_time_and_jump_order() {
@@ -1325,5 +1611,212 @@ mod tests {
             decode_remote_world_trace(SMSG_DESTROY_OBJECT, &destroy).unwrap(),
             vec![RemoteWorldTraceEvent::Destroy { guid }]
         );
+    }
+
+    #[test]
+    fn remote_player_decoder_emits_the_bounded_player_vocabulary() {
+        let guid = 0x0100_0000_0000_0002;
+        let movement = AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, true);
+        let create = remote_create_body(guid, OBJECT_TYPE_PLAYER, false, movement);
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_UPDATE_OBJECT,
+                create
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::PlayerCreate { guid, movement }]
+        );
+
+        let mut in_container = 1_u32.to_le_bytes().to_vec();
+        in_container.push(1); // movement
+        push_packed_guid(&mut in_container, guid);
+        in_container.extend_from_slice(&UPDATE_FLAG_LIVING.to_le_bytes());
+        in_container.extend_from_slice(&movement.encode().unwrap());
+        in_container.extend((0..9).flat_map(|_| 1.0_f32.to_le_bytes()));
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_UPDATE_OBJECT,
+                in_container,
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::PlayerMovement {
+                guid,
+                movement,
+                opcode: SMSG_UPDATE_OBJECT,
+            }]
+        );
+
+        for opcode in [
+            MSG_MOVE_START_FORWARD_SERVER,
+            MSG_MOVE_HEARTBEAT_SERVER,
+            MSG_MOVE_STOP_SERVER,
+        ] {
+            let mut movement_payload = Vec::new();
+            push_packed_guid(&mut movement_payload, guid);
+            movement_payload.extend_from_slice(&movement.encode().unwrap());
+            assert_eq!(
+                decode_remote_player_frame(&WorldServerFrame::test_complete(
+                    opcode,
+                    movement_payload,
+                ))
+                .unwrap(),
+                vec![RemotePlayerRecord::PlayerMovement {
+                    guid,
+                    movement,
+                    opcode,
+                }]
+            );
+        }
+
+        let mut out_of_range = 1_u32.to_le_bytes().to_vec();
+        out_of_range.push(4);
+        out_of_range.extend_from_slice(&1_u32.to_le_bytes());
+        push_packed_guid(&mut out_of_range, guid);
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_UPDATE_OBJECT,
+                out_of_range,
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::OutOfRange { guid }]
+        );
+
+        let mut destroy = guid.to_le_bytes().to_vec();
+        destroy.push(0);
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_DESTROY_OBJECT,
+                destroy
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::Destroy { guid }]
+        );
+    }
+
+    #[test]
+    fn remote_player_decoder_consumes_ignored_blocks_and_compression_exactly() {
+        let guid = 0x0100_0000_0000_0002;
+        let movement = AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, false);
+        let mut body = 5_u32.to_le_bytes().to_vec();
+        body.push(0); // values
+        push_packed_guid(&mut body, 99);
+        body.push(0); // no mask words
+        body.push(5); // near objects
+        body.extend_from_slice(&1_u32.to_le_bytes());
+        push_packed_guid(&mut body, 98);
+        body.extend_from_slice(&remote_create_body(guid, 3, false, movement)[4..]); // NPC create
+        body.extend_from_slice(&remote_create_body(guid, OBJECT_TYPE_PLAYER, true, movement)[4..]);
+        body.extend_from_slice(&remote_create_body(guid, OBJECT_TYPE_PLAYER, false, movement)[4..]);
+        let mut compressed = Vec::new();
+        compressed.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&body).unwrap();
+        compressed.extend_from_slice(&encoder.finish().unwrap());
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_COMPRESSED_UPDATE_OBJECT,
+                compressed,
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::PlayerCreate { guid, movement }]
+        );
+    }
+
+    #[test]
+    fn remote_player_decoder_redacts_unusable_movement_and_rejects_malformed_complete_frames() {
+        let guid = 0x0100_0000_0000_0002;
+        let mut unsupported = Vec::new();
+        push_packed_guid(&mut unsupported, guid);
+        let mut movement = AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, false)
+            .encode()
+            .unwrap();
+        movement[..4].copy_from_slice(&MOVEMENT_FLAG_FALLING.to_le_bytes());
+        movement.extend_from_slice(&[0; 16]); // required jump payload
+        unsupported.extend_from_slice(&movement);
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                MSG_MOVE_HEARTBEAT_SERVER,
+                unsupported,
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::UnusableMovement {
+                guid,
+                category: RemotePlayerUnusableCategory::UnsupportedMovement,
+            }]
+        );
+
+        let mut invalid = Vec::new();
+        push_packed_guid(&mut invalid, guid);
+        invalid.extend_from_slice(
+            &AcoreMovementInfo::ground(42, [1.0, 2.0, 3.0], 0.5, false)
+                .encode()
+                .unwrap(),
+        );
+        invalid[13..17].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                MSG_MOVE_HEARTBEAT_SERVER,
+                invalid,
+            ))
+            .unwrap(),
+            vec![RemotePlayerRecord::UnusableMovement {
+                guid,
+                category: RemotePlayerUnusableCategory::InvalidPose,
+            }]
+        );
+
+        assert!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                MSG_MOVE_HEARTBEAT_SERVER,
+                vec![0x80],
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_DESTROY_OBJECT,
+                vec![0; 10],
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_COMPRESSED_UPDATE_OBJECT,
+                vec![4, 0, 0, 0, 0xff],
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_UPDATE_OBJECT,
+                [1_u32.to_le_bytes().as_slice(), &[0xff]].concat(),
+            ))
+            .is_err()
+        );
+        assert!(
+            decode_remote_player_frame(&WorldServerFrame::test_complete(
+                SMSG_UPDATE_OBJECT,
+                [1_u32.to_le_bytes().as_slice(), &[0, 0x80]].concat(),
+            ))
+            .is_err()
+        );
+    }
+
+    fn remote_create_body(
+        guid: u64,
+        object_type: u8,
+        self_update: bool,
+        movement: AcoreMovementInfo,
+    ) -> Vec<u8> {
+        let mut body = 1_u32.to_le_bytes().to_vec();
+        body.push(3); // CreateObject2
+        push_packed_guid(&mut body, guid);
+        body.push(object_type);
+        let flags = UPDATE_FLAG_LIVING | UPDATE_FLAG_STATIONARY_POSITION | u16::from(self_update);
+        body.extend_from_slice(&flags.to_le_bytes());
+        body.extend_from_slice(&movement.encode().unwrap());
+        body.extend((0..9).flat_map(|_| 1.0_f32.to_le_bytes()));
+        body.push(0); // no values-mask words
+        body
     }
 }

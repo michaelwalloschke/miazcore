@@ -1,7 +1,7 @@
 # Implement minimal Remote-player protocol records
 
 Type: implementation
-Status: open
+Status: resolved
 Blocked by: None — can start immediately
 
 ## Objective
@@ -49,3 +49,18 @@ source provenance is unchanged, and synthetic fixtures remain project-owned.
   VALUES/NEAR_OBJECTS input,
   compression, arbitrary chunk boundaries, and malformed failures.
 - No new public generic decoder or raw-payload API.
+
+## Answer
+
+`client_protocol` now exposes `decode_remote_player_frame`, a complete-frame
+only boundary that emits bounded GUID-keyed create, ordinary-ground movement,
+out-of-range, destroy, and redacted unusable-movement records. It exactly
+consumes supported compressed and uncompressed update containers; the prior
+research tracer now adapts this same decoder rather than maintaining a second
+structural walker. Synthetic tests cover all three direct movement opcodes,
+container records and ignored blocks, compression, arbitrary fragmented and
+coalesced encrypted-frame delivery, plus malformed container, compression,
+packed-GUID, and trailing-byte failures.
+
+`cargo test -p client_protocol`, `cargo clippy --workspace --all-targets -- -D
+warnings`, and `scripts/check.sh` pass.

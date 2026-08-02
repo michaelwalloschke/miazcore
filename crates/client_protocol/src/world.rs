@@ -33,6 +33,11 @@ impl WorldServerFrame {
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_complete(opcode: u16, payload: Vec<u8>) -> Self {
+        Self { opcode, payload }
+    }
 }
 
 /// Stateful server-to-client header stream.
@@ -496,7 +501,10 @@ fn read_array<const N: usize>(reader: &mut impl Read) -> Result<[u8; N], Protoco
 #[allow(clippy::items_after_test_module)] // parsing helpers remain adjacent to production decoder code
 mod tests {
     use super::IncrementalWorldServerDecoder;
-    use crate::{HeaderCipher, HeaderDirection};
+    use crate::{
+        HeaderCipher, HeaderDirection, RemotePlayerRecord, SMSG_DESTROY_OBJECT,
+        decode_remote_player_frame,
+    };
 
     const KEY: [u8; 40] = [7; 40];
 
@@ -575,6 +583,41 @@ mod tests {
         let second = decoder.next_frame().unwrap().unwrap();
         assert_eq!((first.opcode(), first.payload()), (0x1111, &[1, 2, 3][..]));
         assert_eq!((second.opcode(), second.payload()), (0x2222, &[4, 5][..]));
+    }
+
+    #[test]
+    fn complete_frames_reach_the_remote_decoder_only_after_fragmented_payloads_settle() {
+        let payload = [7_u8; 9]; // destroy GUID plus its death byte
+        let wire = encrypted_server_frames(&[(SMSG_DESTROY_OBJECT, payload.to_vec())]);
+        let mut decoder = IncrementalWorldServerDecoder::new(&KEY);
+        decoder.push_bytes(&wire[..5]).unwrap(); // header plus one payload byte
+        assert!(decoder.next_frame().unwrap().is_none());
+
+        decoder.push_bytes(&wire[5..]).unwrap();
+        let frame = decoder.next_frame().unwrap().unwrap();
+        assert_eq!(frame.payload(), payload);
+        assert!(decode_remote_player_frame(&frame).is_ok());
+        assert!(decoder.next_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn coalesced_complete_frames_preserve_alignment_through_ignored_world_data() {
+        let guid = 0x0707_0707_0707_0707_u64;
+        let mut destroy = guid.to_le_bytes().to_vec();
+        destroy.push(0);
+        let wire =
+            encrypted_server_frames(&[(0x7fff, vec![1, 2, 3]), (SMSG_DESTROY_OBJECT, destroy)]);
+        let mut decoder = IncrementalWorldServerDecoder::new(&KEY);
+        decoder.push_bytes(&wire).unwrap();
+
+        let ignored = decoder.next_frame().unwrap().unwrap();
+        assert!(decode_remote_player_frame(&ignored).unwrap().is_empty());
+        let destroy = decoder.next_frame().unwrap().unwrap();
+        assert_eq!(
+            decode_remote_player_frame(&destroy).unwrap(),
+            vec![RemotePlayerRecord::Destroy { guid }]
+        );
+        assert!(decoder.next_frame().unwrap().is_none());
     }
 
     #[test]

@@ -59,6 +59,7 @@ Pair B's clean logout.
 - [Implementation slices and scope gates](research/19-implementation-slices-and-scope-gates.md): seven cumulative, ownership-scoped slices lead from protocol decoder through retained session, Bevy projection, deterministic harness, proof-aware clients, live machine proof, and manual evidence finalization; Ticket 21's Fixture Pair work remains their prerequisite.
 - [Route audit and implementation handoff](research/20-route-audit-and-implementation-handoff.md): the seven-slice route is implementation-ready after Ticket 22 resolved the formerly ambiguous machine-attempt versus final-bundle boundary.
 - [Machine-attempt curation](research/22-machine-attempt-curation.md): ephemeral control files, immutable Machine Attempts, and closed Final Evidence Bundles use separate roots; provenance-listed canonical files are byte-copied and re-hashed into the bundle, while diagnostics remain retained attempt-only evidence.
+- [Minimal Remote-player protocol records](issues/23-implement-remote-player-protocol-records.md): complete authenticated World frames now decode through one bounded semantic protocol boundary; encrypted-frame alignment remains owned by the existing incremental decoder, and malformed supported records fail closed.
 
 ## Not yet specified
 
