@@ -7,8 +7,9 @@ Status: open
 
 Reach a decision-complete, implementation-ready plan for a private Shared-Host
 Multi-client Simulation: two independent macOS Learning Client processes enter
-the local Reference Realm and each observes the other's Realm-replicated Avatar
-appear, perform a bounded move, and disappear after clean logout.
+the local Reference Realm; each observes the counterpart appear and perform a
+bounded serial Replicated Move, and Pair A observes Pair B disappear after
+Pair B's clean logout.
 
 ## Notes
 
@@ -56,16 +57,15 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Role-reversed live proof](research/17-role-reversed-live-proof.md): one lock-held no-retry macOS machine gate runs serial A-to-B and B-to-A turns, captures exactly two windows, observes one final Pair B removal, then recovers fixture health; its pass remains pending Ticket 18's manual attestation.
 - [Manual two-window acceptance](research/18-manual-two-window-acceptance.md): a short SHA-bound macOS checklist confirms two distinct Pair windows, readable Remote Avatar presence and pose projection, serial role visibility, clean removal, and local-only camera/focus controls without substituting for semantic sidecars or controlled capture.
 - [Implementation slices and scope gates](research/19-implementation-slices-and-scope-gates.md): seven cumulative, ownership-scoped slices lead from protocol decoder through retained session, Bevy projection, deterministic harness, proof-aware clients, live machine proof, and manual evidence finalization; Ticket 21's Fixture Pair work remains their prerequisite.
+- [Route audit and implementation handoff](research/20-route-audit-and-implementation-handoff.md): the seven-slice route is otherwise consistent, but its handoff is blocked by Ticket 22's machine-attempt curation decision; no implementation ticket can silently choose a final evidence layout.
 
 ## Not yet specified
 
-- The Fixture Pair's same-map initial proximity, fixed placement, reset
-  ownership, local timing boundaries, minimal decoder seam, session-event
-  boundary, Bevy presentation boundary, deterministic test harness,
-  role-reversed live machine proof, manual two-window acceptance, and
-  implementation slices are decided.
 - Windows/LAN follow-up boundaries remain deferred until this macOS loopback
   route is implemented and accepted.
+- [Machine-attempt curation](issues/22-decide-machine-attempt-curation.md) is
+  the remaining implementation-handoff blocker: Ticket 17's retained
+  machine-only files have no closed Ticket 11 final-bundle classification.
 
 ## Out of scope
 
