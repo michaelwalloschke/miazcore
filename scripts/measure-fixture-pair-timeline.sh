@@ -91,11 +91,11 @@ if run.get("schema") != "miazcore.fixture-pair-timeline-run.v1":
 timeline = run.get("timeline", {})
 required_timeline = (
     "observer_ready_after_ms", "mover_ready_after_ms", "move_start_after_ms",
-    "move_stop_after_ms", "logout_requested_after_ms", "mover_proof_complete_after_ms",
+    "move_stop_after_ms", "logout_requested_after_ms", "logout_observation_window_after_ms",
 )
 if any(not isinstance(timeline.get(key), int) or timeline[key] < 0 for key in required_timeline):
     raise SystemExit("Fixture Pair timeline has incomplete shared-clock controller values")
-if not timeline["observer_ready_after_ms"] <= timeline["mover_ready_after_ms"] <= timeline["move_start_after_ms"] <= timeline["move_stop_after_ms"] <= timeline["logout_requested_after_ms"] <= timeline["mover_proof_complete_after_ms"]:
+if not timeline["observer_ready_after_ms"] <= timeline["mover_ready_after_ms"] <= timeline["move_start_after_ms"] <= timeline["move_stop_after_ms"] <= timeline["logout_requested_after_ms"] <= timeline["logout_observation_window_after_ms"]:
     raise SystemExit("Fixture Pair controller actions are not serially ordered")
 mover_guid = run.get("mover_guid")
 events = [event for event in transcript.get("events", []) if event.get("guid") == mover_guid]

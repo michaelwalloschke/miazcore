@@ -14,7 +14,10 @@ use fixture_profile::FixtureProfile;
 
 const READY_DEADLINE: Duration = Duration::from_secs(45);
 const STOP_DEADLINE: Duration = Duration::from_secs(8);
-const PROOF_DEADLINE: Duration = Duration::from_secs(40);
+// AzerothCore's ordinary saving logout is protocol-visible after its deliberate
+// delay. The observer transcript, rather than a second reconnect/persistence
+// proof, establishes whether that logout removed the remote Avatar.
+const LOGOUT_OBSERVATION_WINDOW: Duration = Duration::from_secs(23);
 
 /// Runs one real, serial Pair A/B turn while one controller clock timestamps
 /// both local commands and the observer's semantic remote-frame transcript.
@@ -57,8 +60,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let logout_requested_after_ms = elapsed_ms(started_at);
     mover.send_control(ControlCommand::BeginMovementProof)?;
-    wait_for_offline(&mover)?;
-    let mover_proof_complete_after_ms = elapsed_ms(started_at);
+    thread::sleep(LOGOUT_OBSERVATION_WINDOW);
+    let logout_observation_window_after_ms = elapsed_ms(started_at);
     mover.shutdown()?;
     observer.shutdown()?;
 
@@ -78,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             move_start_after_ms,
             move_stop_after_ms,
             logout_requested_after_ms,
-            mover_proof_complete_after_ms,
+            logout_observation_window_after_ms,
         },
     )?;
     Ok(())
@@ -182,28 +185,6 @@ fn wait_for_stopped_submission(
     }
 }
 
-fn wait_for_offline(session: &LiveDiagnosticSession) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + PROOF_DEADLINE;
-    loop {
-        let snapshot = session.snapshot();
-        if let Some(failure) = snapshot.latest_failure.as_ref() {
-            return Err(io::Error::other(format!(
-                "pair-b saving logout failed at {}: {}",
-                failure.stage(),
-                failure.context(),
-            ))
-            .into());
-        }
-        if snapshot.phase == ClientPhase::Offline {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::other("pair-b saving logout did not complete").into());
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at
         .elapsed()
@@ -220,7 +201,7 @@ struct Timeline {
     move_start_after_ms: u64,
     move_stop_after_ms: u64,
     logout_requested_after_ms: u64,
-    mover_proof_complete_after_ms: u64,
+    logout_observation_window_after_ms: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -243,7 +224,7 @@ fn write_result(
             "\"submitted_stop\":{{\"map_id\":{},\"east\":{:.3},\"north\":{:.3},\"elevation\":{:.3},\"orientation\":{:.3}}},",
             "\"timeline\":{{\"observer_ready_after_ms\":{},\"mover_ready_after_ms\":{},",
             "\"move_start_after_ms\":{},\"move_stop_after_ms\":{},",
-            "\"logout_requested_after_ms\":{},\"mover_proof_complete_after_ms\":{}}}}}\n"
+            "\"logout_requested_after_ms\":{},\"logout_observation_window_after_ms\":{}}}}}\n"
         ),
         observer_anchor.map_id,
         observer_anchor.east,
@@ -264,7 +245,7 @@ fn write_result(
         timeline.move_start_after_ms,
         timeline.move_stop_after_ms,
         timeline.logout_requested_after_ms,
-        timeline.mover_proof_complete_after_ms,
+        timeline.logout_observation_window_after_ms,
         observer_guid = observer_guid,
         mover_guid = mover_guid,
     );
