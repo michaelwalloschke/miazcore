@@ -52,13 +52,15 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Minimal remote-player protocol decoder](research/13-minimal-remote-player-protocol-decoder.md): a protocol-owned, stateless semantic decoder receives only complete plaintext World frames, fully consumes bounded update containers, and emits GUID-keyed create/movement/removal records while deferring selection, display metadata, and all general object decoding.
 - [Remote Avatar session-event boundary](research/14-remote-avatar-session-event-boundary.md): the retained World worker owns one accepted GUID and publishes lossless Remote Avatar lifecycle/pose transitions via the existing bounded semantic FIFO and latest-state snapshot; saturation fails the World session rather than silently coalescing updates.
 - [Remote Avatar presentation boundary](research/15-remote-avatar-presentation-boundary.md): Bevy privately projects one GUID-keyed marker from ordered Remote Avatar events and the snapshot fence, smooths only small same-map observed deltas, snaps at `1.628 m` or map change, and cannot feed visual state back into session truth.
+- [Deterministic replication test harness](research/16-deterministic-replication-test-harness.md): a layered, crate-local fake-clock and encrypted-frame fixture vocabulary proves decoder, session, presentation, and observer-only semantic contracts without Docker, a window/GPU renderer, or wall-clock timing claims.
 
 ## Not yet specified
 
-- The deterministic replication test harness is still design work. The Fixture
-  Pair's same-map initial proximity, fixed placement, reset ownership, local
-  timing boundaries, minimal decoder seam, session-event boundary, and Bevy
-  presentation boundary are decided.
+- The role-reversed live-proof and manual two-window acceptance contracts are
+  still design work. The Fixture Pair's same-map initial proximity, fixed
+  placement, reset ownership, local timing boundaries, minimal decoder seam,
+  session-event boundary, Bevy presentation boundary, and deterministic test
+  harness are decided.
 - The implementation slices and Windows/LAN follow-up boundaries will be
   refined only after the earlier protocol and environment decisions are
   resolved.
