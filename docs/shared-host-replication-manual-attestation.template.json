@@ -1,0 +1,19 @@
+{
+  "schema": "miazcore.shared-host-replication-manual-attestation.v1",
+  "attempt_id": "REPLACE_WITH_RETAINED_MACHINE_ATTEMPT_ID",
+  "candidate_sha": "REPLACE_WITH_CLEAN_CANDIDATE_SHA",
+  "capture_sha256": "REPLACE_WITH_CAPTURE_PNG_SHA256",
+  "manifest_header_sha256": "REPLACE_WITH_MANIFEST_HEADER_SHA256",
+  "manifest_files_sha256": "REPLACE_WITH_MANIFEST_FILES_SHA256",
+  "result": "PASS",
+  "checks": {
+    "distinct_pair_windows_and_local_identities": "PASS",
+    "remote_marker_guid_and_presence_readability": "PASS",
+    "observer_observed_then_rendered_projection": "PASS",
+    "heading_and_pose_source_distinction": "PASS",
+    "scripted_projection_snap_readability": "PASS",
+    "clean_logout_removal_readability": "PASS",
+    "camera_focus_controls_remain_local_only": "PASS"
+  },
+  "notes": "Describe only non-sensitive visual and control observations."
+}

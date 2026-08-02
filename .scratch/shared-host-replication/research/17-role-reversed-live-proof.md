@@ -30,9 +30,12 @@ artifacts/shared-host-replication/<utc>-<candidate-sha-prefix>/
 ```
 
 Its success is a **machine-proof pass pending Ticket 18's manual attestation**.
-It does not create a final `report.md`, accept an attestation, or claim the
-full Ticket 11 bundle passed. Ticket 18 later binds a human attestation and
-the manifest finalization to this retained, successful machine attempt.
+The bounded human review is a pause inside this same lock-held attempt, after
+the ready barrier and around its actual role turns; it never launches a fresh
+pair or replays an already completed proof. The script does not create a final
+`report.md`, accept an attestation, or claim the full Ticket 11 bundle passed.
+Ticket 18 later binds the recorded manual review and manifest finalization to
+this retained, successful machine attempt.
 `versions.json` is already a closed, run-time provenance input to that future
 manifest; manual finalization may read it but must never recreate or replace
 it.
@@ -91,7 +94,7 @@ file. Revisions are positive and strictly increasing per profile. Valid
 commands are exactly:
 
 ```text
-idle | perform-role-turn | request-clean-shutdown
+idle | perform-role-turn | show-projection-snap | request-clean-shutdown
 ```
 
 No next command is written until the matching sidecar acknowledgement is
@@ -108,9 +111,11 @@ records; the proof must not manufacture a second create between turns.
 
 ```text
 Acquire -> PreflightResetHealth -> StartPair -> BothReadyAndPeersPresent
-  -> A-turn (A moves, B observes) -> B-turn (B moves, A observes)
+  -> ManualReadyReview -> A-turn (A moves, B observes) -> ManualAReview
+  -> B-turn (B moves, A observes) -> ManualBReview -> ManualSnapReview
   -> CaptureTwoWindows -> B-clean-logout (A observes Removed)
-  -> A-clean-shutdown -> OfflineSettlement -> FinalResetHealth -> MachinePass
+  -> ManualRemovalReview -> A-clean-shutdown -> OfflineSettlement
+  -> FinalResetHealth -> MachinePass
 ```
 
 For every role turn, the parent snapshots each observer event sequence before
@@ -130,6 +135,32 @@ Submitted Pose; Pair B must remain MovementReady and record its pre-existing
 3D Euclidean delta `<= 0.25 m`. B-turn repeats these exact assertions with
 roles reversed. No role command may invoke the saving/reconnect persistence
 proof, and no result may include or assert a reconnect observation.
+
+At each named `Manual*Review` checkpoint the controller holds both existing
+children open and exposes only an acknowledge-or-fail reviewer checkpoint. The
+reviewer may use local orbit, zoom, and focus controls, but cannot publish
+movement or write a role command. `ManualReadyReview` occurs after both
+`MovementReady`/`Created` assertions; `ManualAReview` and `ManualBReview`
+occur immediately after their corresponding actual serial turn, with the
+observer's changed `OBSERVED` and projected `RENDERED` values still visible.
+`ManualSnapReview` presents a project-owned fixed same-map large-distance
+correction diagnostic, labelled as presentation only and never as Realm
+evidence. It is produced by one parent-owned `show-projection-snap` command to
+the selected still-present observer after B-turn: the child applies that
+scripted correction to its Remote Pose Projection, emits one closed diagnostic
+acknowledgement, restores its `PRESENT` marker to the unchanged
+Realm-observed pose before capture, writes no movement frame, and neither
+changes its Realm-observed pose nor claims an extra Remote Avatar event. The
+parent rejects that command at every other phase, from a mover, or without the
+expected acknowledgement. The map-context hide is deterministic/headless
+coverage only, so it cannot invalidate the required two-marker live capture.
+
+After B's matching semantic `Removed` arrives, `ManualRemovalReview` holds the
+still-connected Pair A window long enough for the reviewer to see `ABSENT` and
+the cleared marker/pose rows before A shutdown. An unacknowledged review
+deadline, failed review signal, child fault, malformed snap acknowledgement, or
+input publication attempt fails the same attempt and follows its one recovery
+path; no review phase replays a turn or starts another pair.
 
 After both turns, both live windows remain open long enough for capture. The
 parent then asks only Pair B for clean shutdown. Pair A must record matching

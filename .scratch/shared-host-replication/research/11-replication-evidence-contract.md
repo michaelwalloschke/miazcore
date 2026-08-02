@@ -36,11 +36,18 @@ artifacts/shared-host-replication/<attempt-id>/
 `candidate_sha` is a full 40-hex clean Git SHA. `manifest.json` records the
 schema, candidate SHA, attempt ID, canonical loopback Realm identity, command
 exit results, SHA-256 for every retained regular file except `manifest.json`,
-and the explicit deferrals. Its sorted bytewise path-to-hash table is the
-`manifest_files_sha256` domain; the canonical serialization of every other
-manifest field is `manifest_header_sha256`. Both digests appear in the manual
-attestation, which is itself in the files table. It is written last through a
-temporary sibling and rename. The validator accepts no symlink,
+and the explicit deferrals. Its canonical header domain is exactly `schema`,
+`attempt_id`, `candidate_sha`, `realm`, `commands`, `deferrals`, and `result`;
+its digest is `manifest_header_sha256`. Its `attestation_subject_files` domain
+is the sorted bytewise path-to-hash table for immutable machine inputs:
+`candidate_sha`, `commands.json`, `versions.json`, both sidecars, `turns.json`,
+`capture.png`, and `capture.json`. It excludes `manual-attestation.json`,
+`report.md`, and `manifest.json`; its digest is `manifest_files_sha256`. Both
+pre-attestation digests appear in the manual attestation. The final `files`
+table separately lists every retained regular file except `manifest.json`,
+including the completed attestation and report. This prevents a hash cycle
+while still binding every final retained file. `manifest.json` is written last
+through a temporary sibling and rename. The validator accepts no symlink,
 directory, unlisted file, missing hash, hash
 mismatch, unexpected field, non-finite number, or schema/version mismatch.
 Each later PASS leaves earlier attempt directories untouched.
@@ -53,8 +60,8 @@ attempt_id, profile, guid, entry_anchor, movement_ready, events, terminal`;
 attempt_id, candidate_sha, capture_sha256, backend, timestamp, windows, dimensions`;
 the attestation has `schema, attempt_id, candidate_sha, capture_sha256,
 manifest_header_sha256, manifest_files_sha256, checks, result, notes`; and the
-manifest has `schema, attempt_id, candidate_sha, realm, commands, files,
-deferrals, result`.
+manifest has `schema, attempt_id, candidate_sha, realm, commands,
+attestation_subject_files, files, deferrals, result`.
 Schemas are `miazcore.shared-host-replication-{file}.v1`; GUIDs are non-zero
 lowercase hexadecimal shorthand, revisions positive/strictly increasing,
 SHA-256 values lowercase 64-hex, and poses exactly `map_id, east, north,
