@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use client_session::{ClientPhase, ControlCommand, LiveDiagnosticSession, WorldPose};
+use client_session::{ClientPhase, ControlCommand, LiveDiagnosticSession, ProofStage, WorldPose};
 
 #[path = "../src/fixture_profile.rs"]
 mod fixture_profile;
@@ -14,10 +14,8 @@ use fixture_profile::FixtureProfile;
 
 const READY_DEADLINE: Duration = Duration::from_secs(45);
 const STOP_DEADLINE: Duration = Duration::from_secs(8);
-// AzerothCore's ordinary saving logout is protocol-visible after its deliberate
-// delay. The observer transcript, rather than a second reconnect/persistence
-// proof, establishes whether that logout removed the remote Avatar.
-const LOGOUT_OBSERVATION_WINDOW: Duration = Duration::from_secs(23);
+const LOGOUT_COMPLETION_DEADLINE: Duration = Duration::from_secs(25);
+const POST_LOGOUT_OBSERVATION_WINDOW: Duration = Duration::from_secs(1);
 
 /// Runs one real, serial Pair A/B turn while one controller clock timestamps
 /// both local commands and the observer's semantic remote-frame transcript.
@@ -60,7 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let logout_requested_after_ms = elapsed_ms(started_at);
     mover.send_control(ControlCommand::BeginMovementProof)?;
-    thread::sleep(LOGOUT_OBSERVATION_WINDOW);
+    wait_for_saving_logout_complete(&mover)?;
+    // The retained observer, not the controlled client's later reconnect
+    // comparison, proves remote removal. Keep it alive long enough to consume
+    // a just-completed logout's remaining complete World frames.
+    thread::sleep(POST_LOGOUT_OBSERVATION_WINDOW);
     let logout_observation_window_after_ms = elapsed_ms(started_at);
     mover.shutdown()?;
     observer.shutdown()?;
@@ -180,6 +182,40 @@ fn wait_for_stopped_submission(
         }
         if Instant::now() >= deadline {
             return Err(io::Error::other("pair-b mover did not submit a stopped pose").into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_saving_logout_complete(session: &LiveDiagnosticSession) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + LOGOUT_COMPLETION_DEADLINE;
+    loop {
+        let snapshot = session.snapshot();
+        if let Some(failure) = snapshot.latest_failure.as_ref() {
+            return Err(io::Error::other(format!(
+                "pair-b saving logout failed at {}: {}",
+                failure.stage(),
+                failure.context(),
+            ))
+            .into());
+        }
+        if matches!(
+            snapshot.phase,
+            ClientPhase::ProvingMovement(ProofStage::WaitingOffline)
+        ) || session.drain_events().into_iter().any(|event| {
+            matches!(
+                event.kind,
+                client_session::ClientEventKind::PhaseChanged {
+                    phase: ClientPhase::ProvingMovement(ProofStage::WaitingOffline)
+                }
+            )
+        }) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                io::Error::other("pair-b saving logout did not reach WaitingOffline").into(),
+            );
         }
         thread::sleep(Duration::from_millis(10));
     }

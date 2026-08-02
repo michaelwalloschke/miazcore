@@ -119,6 +119,8 @@ if not create_index < movement_indices[0] <= stop_index < destroy_index:
 allowed = {"0x00b5", "0x00b7", "0x00ee"}
 if any(events[i].get("opcode") not in allowed for i in movement_indices):
     raise SystemExit("Fixture Pair observer saw an unsupported movement opcode")
+if not any(events[i].get("opcode") != "0x00b7" for i in movement_indices if i < stop_index):
+    raise SystemExit("Fixture Pair observer lacks an in-motion update before terminal stop")
 map_id = run.get("map_id")
 for index in [create_index, *movement_indices]:
     event = events[index]
@@ -126,8 +128,11 @@ for index in [create_index, *movement_indices]:
         raise SystemExit("Fixture Pair observer pose is incomplete or on another map")
 submitted = run.get("submitted_stop", {})
 stop = events[stop_index]
-distance = math.hypot(stop["east"] - submitted.get("east", math.inf), stop["north"] - submitted.get("north", math.inf))
-if distance > 0.25 or abs(stop["elevation"] - submitted.get("elevation", math.inf)) > 0.25:
+distance = math.dist(
+    (stop["east"], stop["north"], stop["elevation"]),
+    (submitted.get("east", math.inf), submitted.get("north", math.inf), submitted.get("elevation", math.inf)),
+)
+if distance > 0.25:
     raise SystemExit("Fixture Pair terminal observer pose exceeds the 0.25m comparison contract")
 anchor = run.get("mover_anchor", {})
 move_distance = math.hypot(submitted.get("east", math.inf) - anchor.get("east", math.inf), submitted.get("north", math.inf) - anchor.get("north", math.inf))
@@ -137,7 +142,10 @@ movement_times = [events[i]["received_after_ms"] for i in movement_indices]
 cadences = [right - left for left, right in zip(movement_times, movement_times[1:])]
 deltas = []
 for left, right in zip([events[create_index], *(events[i] for i in movement_indices)], [*(events[i] for i in movement_indices), events[stop_index]]):
-    deltas.append(math.hypot(right["east"] - left["east"], right["north"] - left["north"]))
+    deltas.append(math.dist(
+        (right["east"], right["north"], right["elevation"]),
+        (left["east"], left["north"], left["elevation"]),
+    ))
 output = {
     "schema": "miazcore.fixture-pair-timeline-sample.v1",
     "observer_guid": run["observer_guid"],
@@ -191,18 +199,21 @@ summary = {
     "final_realm_health": "pending",
 }
 run.mkdir(parents=True, exist_ok=True)
-(run / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+(run / "provisional.json").write_text(json.dumps(summary, indent=2) + "\n")
 PY
 
 stage="final-reset"
 canonical_reset "$workspace/final-reset.marker"
 stage="finalize"
-python3 - "$run/summary.json" <<'PY'
+python3 - "$run/provisional.json" "$run/summary.json" <<'PY'
 import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-summary = json.loads(path.read_text())
+provisional, path = map(pathlib.Path, sys.argv[1:])
+summary = json.loads(provisional.read_text())
 summary["final_realm_health"] = "passed"
-path.write_text(json.dumps(summary, indent=2) + "\n")
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(summary, indent=2) + "\n")
+temporary.replace(path)
+provisional.unlink()
 PY
 succeeded=true
 echo "redacted Fixture Pair timeline retained: $run/summary.json"
