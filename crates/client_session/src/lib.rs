@@ -12,6 +12,9 @@ mod offline;
 mod realm;
 mod runtime;
 
+#[cfg(test)]
+mod replication_harness;
+
 pub use api::{
     ClientEvent, ClientEventKind, ClientFailure, ClientPhase, ClientSnapshot, CommandKind,
     ControlCommand, CorrectionTarget, DiscoveredRealm, EntryStage, FailureCategory, IdentityError,

@@ -1,7 +1,7 @@
 # Implement deterministic replication harness
 
 Type: implementation
-Status: open
+Status: resolved
 Blocked by: [Implement Diagnostic World Remote Avatar projection](25-implement-remote-avatar-projection.md)
 
 ## Objective
@@ -49,3 +49,20 @@ helper has been promoted to a public runtime API.
 - Checked-in synthetic vectors and fake-clock tests with no captured traffic,
   credentials, live keys, Docker, TCP listener, GPU window, or wall-clock
   sleeps.
+
+## Answer
+
+Implemented a `#[cfg(test)]` deterministic replication harness in
+`client_session`: synthetic encrypted frame scripts, retained-poll scripts,
+virtual receipt timing, an observer-only oracle, and a real session-boundary
+driver. It proves ordered Realm-observed lifecycle facts, exact deadline and
+tolerance boundaries, remote faults, EOF/read failures, backpressure fences,
+and fresh-session isolation without adding a runtime API.
+
+The existing headless `client_bevy` Remote Avatar schedule test is the
+cross-crate presentation proof: it verifies a ten-event ingress batch, visible
+tail truncation, remote identity replacement, fence-safe projection, and
+unchanged controlled-character truth.
+
+Evidence: `cargo test -p client_session`, `cargo clippy --workspace
+--all-targets -- -D warnings`, and `scripts/check.sh` pass.

@@ -1881,6 +1881,104 @@ where
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) mod retained_harness {
+    use std::{collections::VecDeque, io, time::Duration};
+
+    use client_protocol::{IncrementalWorldServerDecoder, WorldClientStream};
+
+    use crate::boundary::WorkerBoundary;
+
+    use super::{LoginTransport, MonotonicClock, poll_live_world_frames};
+
+    #[derive(Clone, Debug)]
+    pub(crate) enum PollStep {
+        Pending,
+        Bytes(Vec<u8>),
+        Eof,
+        ReadError(io::ErrorKind),
+    }
+
+    struct ScriptTransport {
+        polls: VecDeque<PollStep>,
+        writes: Vec<u8>,
+    }
+
+    impl io::Read for ScriptTransport {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl io::Write for ScriptTransport {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.writes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LoginTransport for ScriptTransport {
+        fn close(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn poll_read(&mut self, destination: &mut [u8]) -> io::Result<Option<usize>> {
+            match self.polls.pop_front().unwrap_or(PollStep::Pending) {
+                PollStep::Pending => Ok(None),
+                PollStep::Bytes(bytes) => {
+                    assert!(bytes.len() <= destination.len());
+                    destination[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(Some(bytes.len()))
+                }
+                PollStep::Eof => Ok(Some(0)),
+                PollStep::ReadError(kind) => Err(io::Error::from(kind)),
+            }
+        }
+    }
+
+    struct Clock(Duration);
+
+    impl MonotonicClock for Clock {
+        fn now(&mut self) -> Duration {
+            self.0
+        }
+    }
+
+    pub(crate) fn poll(
+        boundary: &mut WorkerBoundary,
+        steps: Vec<PollStep>,
+        key: &[u8; 40],
+        now: Duration,
+    ) -> Result<Vec<u8>, ()> {
+        let mut transport = ScriptTransport {
+            polls: steps.into(),
+            writes: Vec::new(),
+        };
+        let mut clock = Clock(now);
+        let mut decoder = IncrementalWorldServerDecoder::new(key);
+        let mut client_stream = WorldClientStream::new(key);
+        let result = poll_live_world_frames(
+            boundary,
+            &mut transport,
+            &mut clock,
+            &mut decoder,
+            &mut client_stream,
+            42,
+            None,
+            0,
+        );
+        if result.is_err() {
+            boundary.clear_remote_avatar_for_session_failure();
+            return Err(());
+        }
+        Ok(transport.writes)
+    }
+}
+
 fn write_movement_frame<T, C>(
     transport: &mut T,
     client_stream: &mut WorldClientStream,
