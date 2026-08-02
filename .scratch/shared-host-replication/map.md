@@ -50,13 +50,14 @@ appear, perform a bounded move, and disappear after clean logout.
 - [Fixture Pair replication timeline and tolerances](research/09-replication-timeline-and-tolerances.md): a shared-clock, three-sample Pair A/B study calibrates the serial observer deadlines (`331 ms` first pose, `508 ms` terminal stop, `19,760 ms` removal), the fixed `0.25 m` terminal comparison, and a `1.628 m` Remote Pose Projection snap boundary from local Realm evidence.
 - [Role-reversed Replication Evidence Contract](research/11-replication-evidence-contract.md): an independent, hash-bound pair-evidence bundle requires semantic sidecars and serial GUID/lifecycle/Realm-observed-pose assertions; dual-window capture and the manual extension are mandatory but cannot substitute for them.
 - [Minimal remote-player protocol decoder](research/13-minimal-remote-player-protocol-decoder.md): a protocol-owned, stateless semantic decoder receives only complete plaintext World frames, fully consumes bounded update containers, and emits GUID-keyed create/movement/removal records while deferring selection, display metadata, and all general object decoding.
+- [Remote Avatar session-event boundary](research/14-remote-avatar-session-event-boundary.md): the retained World worker owns one accepted GUID and publishes lossless Remote Avatar lifecycle/pose transitions via the existing bounded semantic FIFO and latest-state snapshot; saturation fails the World session rather than silently coalescing updates.
 
 ## Not yet specified
 
-- The Remote Avatar session-event and Bevy presentation contracts are still
-  design work. The Fixture Pair's same-map initial proximity, fixed placement,
-  reset ownership, local timing boundaries, and minimal decoder seam are
-  decided.
+- The Bevy Remote Avatar presentation contract is still design work. The
+  Fixture Pair's same-map initial proximity, fixed placement, reset ownership,
+  local timing boundaries, minimal decoder seam, and session-event boundary
+  are decided.
 - The implementation slices and Windows/LAN follow-up boundaries will be
   refined only after the earlier protocol and environment decisions are
   resolved.
