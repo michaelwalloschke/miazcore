@@ -65,6 +65,18 @@ Pair B's clean logout.
 - Windows/LAN follow-up boundaries remain deferred until this macOS loopback
   route is implemented and accepted.
 
+## Implementation frontier
+
+Work these implementation tickets in dependency order:
+
+1. [Minimal Remote-player protocol records](issues/23-implement-remote-player-protocol-records.md)
+2. [Retained-session Remote Avatar truth](issues/24-implement-remote-avatar-session-truth.md)
+3. [Diagnostic World Remote Avatar projection](issues/25-implement-remote-avatar-projection.md)
+4. [Deterministic replication harness](issues/26-implement-deterministic-replication-harness.md)
+5. [Proof-aware Pair client boundary](issues/27-implement-proof-aware-pair-client-boundary.md)
+6. [Role-reversed live machine proof](issues/28-implement-role-reversed-live-machine-proof.md)
+7. [Final replication evidence curation](issues/29-implement-final-replication-evidence-curation.md)
+
 ## Out of scope
 
 - Native Windows build, test, render, packaging, and runtime acceptance.
