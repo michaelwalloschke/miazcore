@@ -1,7 +1,7 @@
 # Design the Remote Avatar presentation boundary
 
 Type: wayfinder:grilling
-Status: open
+Status: resolved
 Blocked by: [Define the Realm-replicated Avatar contract](04-define-realm-replicated-avatar-contract.md), [Prototype the dual-window Diagnostic World experience](07-prototype-dual-window-diagnostic-experience.md), [Design the Remote Avatar session-event boundary](14-design-remote-session-event-boundary.md)
 
 ## Question
@@ -16,3 +16,9 @@ Specify one accepted remote marker per client and its visible failure state.
 Defer models, terrain, generic player lists, animation, and rendering claims on
 Windows.
 
+## Answer
+
+[Remote Avatar presentation boundary](../research/15-remote-avatar-presentation-boundary.md)
+defines the private Bevy projection, one-frame lossless ingress, visual
+lifecycle/fault states, snapshot-fence behavior, smoothing/snap mechanics, and
+the inspector/event redaction contract.

@@ -43,6 +43,12 @@ credential-bearing field. `WorldPose` is assembled by the session from the
 decoder's finite movement and the session's authenticated entry-map context;
 the remote decoder never supplies a peer map. A missing entry map is a
 whole-session safety failure before any Remote Avatar event can be published.
+`remote_avatar_invalidated_through` is a session-owned monotonic semantic
+sequence fence: it initializes to zero, changes only when a Remote Avatar
+transition cannot be enqueued because the FIFO is saturated, and is then set
+to the last successfully committed global event sequence in the same snapshot
+revision that clears the Remote Avatar state. It never decreases or derives
+from Bevy state.
 
 ## Acceptance state machine
 

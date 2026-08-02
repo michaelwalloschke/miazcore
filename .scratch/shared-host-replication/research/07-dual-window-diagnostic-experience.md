@@ -57,8 +57,10 @@ the prototype.
   may temporarily differ while smoothing, and it is never copied back into the
   session Snapshot or an evidence sidecar as Remote Avatar truth.
 - Both pose rows show map, east, north, elevation, and orientation with the
-  same precision. Map mismatch or a snap is visibly annotated as
-  `PROJECTION SNAP`; no visual interpolation implies remote prediction.
+  same precision. A same-map snap is visibly annotated as `PROJECTION SNAP`.
+  A map mismatch instead hides the marker and both pose rows, visibly reports
+  `PROJECTION SNAP / MAP CONTEXT UNAVAILABLE`, and never interpolates or
+  implies remote prediction. Ticket 15 owns the exact mechanics.
 - Lifecycle is `ABSENT`, `PRESENT`, or `FAULT`. `Created` establishes the
   marker at the observed pose; `Updated` moves its projection; `Removed`
   despawns it and clears both pose rows. A valid second GUID is shown only as a
