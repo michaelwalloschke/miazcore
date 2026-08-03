@@ -8,6 +8,10 @@ Miazcore is a learning project for exploring game-client architecture and networ
 The user-facing game application whose initial purpose is entering and navigating an AzerothCore-backed world. Multiplayer interaction is not an initial success condition.
 _Avoid_: WoW client replacement, multiplayer client
 
+**User-Supplied Client Asset Set**:
+A legally obtained, build-12340 World of Warcraft data installation made available to the Learning Client for local reading without launching, bundling, or depending on Blizzard's executable. It may originate on another supported platform and be copied to the macOS development host.
+_Avoid_: bundled game files, runnable macOS WoW client, installed game requirement
+
 **World-entry Slice**:
 The first end-to-end learning outcome against a real, locally controlled AzerothCore realm: enter a world, render a minimal placeholder environment, and move the controlled character in a way the realm recognizes.
 _Avoid_: multiplayer slice, full client
